@@ -54,7 +54,8 @@ from raymarcher_k9f2.vec3 import Vec3
 from raymarcher_k9f2.material import Material
 from raymarcher_k9f2.primitives import (
     sdf_sphere, sdf_box, sdf_torus, sdf_cylinder, sdf_capsule,
-    sdf_plane, sdf_cone,
+    sdf_plane, sdf_cone, sdf_ellipsoid, sdf_rounded_box,
+    sdf_link, sdf_hex_prism, sdf_mandelbulb,
 )
 from raymarcher_k9f2.scene import Scene
 from raymarcher_k9f2.camera import Camera
@@ -72,6 +73,11 @@ PRIMITIVE_MAP = {
     'capsule': sdf_capsule,
     'plane': sdf_plane,
     'cone': sdf_cone,
+    'ellipsoid': sdf_ellipsoid,
+    'rounded_box': sdf_rounded_box,
+    'link': sdf_link,
+    'hex_prism': sdf_hex_prism,
+    'mandelbulb': sdf_mandelbulb,
 }
 
 # Type-specific parameter names for each primitive
@@ -83,6 +89,11 @@ PRIMITIVE_PARAMS = {
     'capsule': ['a', 'b', 'radius'],
     'plane': ['height'],
     'cone': ['center', 'half_angle', 'height'],
+    'ellipsoid': ['center', 'radii'],
+    'rounded_box': ['center', 'half_extents', 'radius'],
+    'link': ['center', 'le', 'r1', 'r2'],
+    'hex_prism': ['center', 'radius', 'half_height'],
+    'mandelbulb': ['center', 'scale', 'power', 'iterations'],
 }
 
 
@@ -143,6 +154,32 @@ def _build_object_sdf(obj_config: dict):
             half_angle = math.radians(half_angle)
         height = obj_config.get('height', 2.0)
         return lambda p: sdf_func(p, center, half_angle, height)
+    elif obj_type == 'ellipsoid':
+        center = _parse_vec3(obj_config.get('center', [0, 0, 0]))
+        radii = _parse_vec3(obj_config.get('radii', [1, 1, 1]))
+        return lambda p: sdf_func(p, center, radii)
+    elif obj_type == 'rounded_box':
+        center = _parse_vec3(obj_config.get('center', [0, 0, 0]))
+        half_extents = _parse_vec3(obj_config.get('half_extents', [1, 1, 1]))
+        radius = obj_config.get('radius', 0.15)
+        return lambda p: sdf_func(p, center, half_extents, radius)
+    elif obj_type == 'link':
+        center = _parse_vec3(obj_config.get('center', [0, 0, 0]))
+        le = obj_config.get('le', 0.5)
+        r1 = obj_config.get('r1', 0.5)
+        r2 = obj_config.get('r2', 0.12)
+        return lambda p: sdf_func(p, center, le, r1, r2)
+    elif obj_type == 'hex_prism':
+        center = _parse_vec3(obj_config.get('center', [0, 0, 0]))
+        radius = obj_config.get('radius', 1.0)
+        half_height = obj_config.get('half_height', 1.0)
+        return lambda p: sdf_func(p, center, radius, half_height)
+    elif obj_type == 'mandelbulb':
+        center = _parse_vec3(obj_config.get('center', [0, 0, 0]))
+        scale = obj_config.get('scale', 1.0)
+        power = obj_config.get('power', 8.0)
+        iterations = obj_config.get('iterations', 8)
+        return lambda p: sdf_func(p, center, scale, power, iterations)
     else:
         raise ValueError(f"Unhandled primitive type: {obj_type}")
 
@@ -212,16 +249,6 @@ def build_scene_from_config(config: dict) -> tuple:
             intensity = light_cfg.get('intensity', 1.0)
             scene.add_point_light(position, color, intensity)
 
-    # Build camera
-    cam_cfg = scene_cfg.get('camera', {})
-    camera = Camera(
-        position=_parse_vec3(cam_cfg.get('position', [7, 4, 7])),
-        target=_parse_vec3(cam_cfg.get('target', [0, 1, 0])),
-        fov=cam_cfg.get('fov', 55),
-        focal_distance=cam_cfg.get('focal_distance', 0.0),
-        aperture=cam_cfg.get('aperture', 0.1),
-    )
-
     # Build marcher
     marcher_cfg = scene_cfg.get('marcher', {})
     marcher = RayMarcher(
@@ -233,16 +260,36 @@ def build_scene_from_config(config: dict) -> tuple:
     )
 
     # Build renderer
+    renderer_cfg = config.get('renderer', scene_cfg)
     renderer = Renderer(
-        width=scene_cfg.get('width', 800),
-        height=scene_cfg.get('height', 600),
-        samples=scene_cfg.get('samples', 1),
+        width=renderer_cfg.get('width', scene_cfg.get('width', 800)),
+        height=renderer_cfg.get('height', scene_cfg.get('height', 600)),
+        samples=renderer_cfg.get('samples', scene_cfg.get('samples', 1)),
         marcher=marcher,
-        quiet=scene_cfg.get('quiet', False),
-        gamma=scene_cfg.get('gamma', 2.2),
-        exposure=scene_cfg.get('exposure', 1.0),
+        quiet=renderer_cfg.get('quiet', scene_cfg.get('quiet', False)),
+        gamma=renderer_cfg.get('gamma', scene_cfg.get('gamma', 2.2)),
+        exposure=renderer_cfg.get('exposure', scene_cfg.get('exposure', 1.0)),
     )
 
-    output_path = scene_cfg.get('output', 'output.png')
+    # Build camera (support both top-level and nested camera config)
+    cam_cfg = config.get('camera', scene_cfg.get('camera', {}))
+    camera = Camera(
+        position=_parse_vec3(cam_cfg.get('position', [7, 4, 7])),
+        target=_parse_vec3(cam_cfg.get('target', [0, 1, 0])),
+        fov=cam_cfg.get('fov', 55),
+        focal_distance=cam_cfg.get('focal_distance', 0.0),
+        aperture=cam_cfg.get('aperture', 0.1),
+    )
+
+    output_path = config.get('output', scene_cfg.get('output', 'output.png'))
+
+    # Store tone mapping config for later use
+    tonemap_cfg = config.get('tonemap', {})
+    if tonemap_cfg:
+        renderer._tonemap_method = tonemap_cfg.get('method', None)
+        renderer._tonemap_exposure = tonemap_cfg.get('exposure', 1.0)
+    else:
+        renderer._tonemap_method = None
+        renderer._tonemap_exposure = 1.0
 
     return scene, camera, renderer, output_path

@@ -120,3 +120,31 @@ def checkerboard(scale: float = 1.0, light: Vec3 = None, dark: Vec3 = None) -> M
         albedo=light, specular=0.2, roughness=0.7,
         reflectivity=0.15, checker_scale=scale, checker_color=dark,
     )
+
+def copper() -> Material:
+    """Copper-like metallic material."""
+    return Material(albedo=Vec3(0.95, 0.64, 0.54), specular=0.9, roughness=0.25, reflectivity=0.7, fresnel=0.4)
+
+def jade() -> Material:
+    """Jade-like translucent green material."""
+    return Material(
+        albedo=Vec3(0.1, 0.6, 0.3), specular=0.4, roughness=0.4,
+        subsurface=0.3, subsurface_color=Vec3(0.2, 0.8, 0.3),
+    )
+
+def emissive(color: Vec3 = None, intensity: float = 1.0) -> Material:
+    """Emissive material that glows with the given color."""
+    if color is None:
+        color = Vec3(1, 1, 1)
+    return Material(albedo=Vec3(0, 0, 0), emissive=color * intensity)
+
+def chrome() -> Material:
+    """Chrome-like highly reflective material."""
+    return Material(albedo=Vec3(0.85, 0.85, 0.85), specular=1.0, roughness=0.02, reflectivity=0.95, fresnel=0.5)
+
+def marble() -> Material:
+    """White marble-like material with slight SSS."""
+    return Material(
+        albedo=Vec3(0.95, 0.93, 0.88), specular=0.6, roughness=0.25,
+        reflectivity=0.1, subsurface=0.15, subsurface_color=Vec3(0.9, 0.8, 0.7),
+    )

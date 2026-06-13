@@ -4,7 +4,7 @@ SDF Ray Marcher k9f2 — A pure-Python signed distance field ray marcher.
 Renders 3D scenes using ray marching against analytic signed distance fields.
 Supports multiple primitives, materials, soft shadows, ambient occlusion,
 reflections, refractions (glass), subsurface scattering, depth-of-field,
-animation, and YAML/TOML scene configuration.
+animation, tone mapping, SDF transforms, and YAML/TOML scene configuration.
 
 Usage::
 
@@ -26,9 +26,10 @@ CLI::
 
     raymarcher-k9f2 --scene demo --width 800 --height 600 --output output.png
     raymarcher-k9f2 --config scene.yaml --output custom.png
+    raymarcher-k9f2 --scene demo --tonemap aces --output hdr.png
 """
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 __author__ = "SDF Ray Marcher Project"
 
 from raymarcher_k9f2.vec3 import Vec3, BLACK, WHITE, SKY_BLUE
@@ -36,6 +37,7 @@ from raymarcher_k9f2.material import Material
 from raymarcher_k9f2.primitives import (
     sdf_sphere, sdf_box, sdf_torus, sdf_cylinder, sdf_capsule,
     sdf_plane, sdf_cone, sdf_hex_prism, sdf_mandelbulb,
+    sdf_ellipsoid, sdf_rounded_box, sdf_link,
 )
 from raymarcher_k9f2.csg import (
     sdf_union, sdf_smooth_union, sdf_smooth_subtraction,
@@ -49,6 +51,7 @@ from raymarcher_k9f2.renderer import Renderer
 from raymarcher_k9f2.scenes import (
     build_demo_scene, build_chess_scene, build_terrain_scene,
     build_abstract_scene, build_glass_scene, build_fractal_scene,
+    build_studio_scene, build_showcase_scene,
     SCENES,
 )
 
@@ -57,6 +60,7 @@ __all__ = [
     "Material",
     "sdf_sphere", "sdf_box", "sdf_torus", "sdf_cylinder", "sdf_capsule",
     "sdf_plane", "sdf_cone", "sdf_hex_prism", "sdf_mandelbulb",
+    "sdf_ellipsoid", "sdf_rounded_box", "sdf_link",
     "sdf_union", "sdf_smooth_union", "sdf_smooth_subtraction",
     "sdf_subtraction", "sdf_intersection",
     "checkerboard",
@@ -66,5 +70,6 @@ __all__ = [
     "Renderer",
     "build_demo_scene", "build_chess_scene", "build_terrain_scene",
     "build_abstract_scene", "build_glass_scene", "build_fractal_scene",
+    "build_studio_scene", "build_showcase_scene",
     "SCENES",
 ]

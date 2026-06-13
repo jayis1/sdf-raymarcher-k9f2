@@ -6,7 +6,7 @@ from raymarcher_k9f2.vec3 import Vec3
 from raymarcher_k9f2.material import Material
 from raymarcher_k9f2.primitives import (
     sdf_sphere, sdf_box, sdf_torus, sdf_cylinder, sdf_capsule,
-    sdf_plane, sdf_cone, sdf_mandelbulb,
+    sdf_plane, sdf_cone, sdf_mandelbulb, sdf_link,
 )
 from raymarcher_k9f2.csg import sdf_smooth_union, sdf_smooth_subtraction
 from raymarcher_k9f2.scene import Scene
@@ -300,6 +300,69 @@ def build_studio_scene(time_val: float = 0.0) -> Scene:
     return scene
 
 
+def build_showcase_scene(time_val: float = 0.0) -> Scene:
+    """Showcase scene demonstrating new primitives, transforms, and tone mapping.
+
+    Features ellipsoids, rounded boxes, links, and CSG operations
+    with three-point cinematic lighting.
+    """
+    from raymarcher_k9f2.transforms import sdf_translate, sdf_rotate_y
+    from raymarcher_k9f2.primitives import sdf_ellipsoid, sdf_rounded_box
+
+    scene = Scene()
+    scene.time = time_val
+
+    # Ground plane
+    ground_mat = Material(
+        albedo=Vec3(0.85, 0.85, 0.85), specular=0.3, roughness=0.5,
+        reflectivity=0.15, checker_scale=2.0, checker_color=Vec3(0.35, 0.35, 0.38),
+    )
+    scene.add_object(lambda p: sdf_plane(p, height=0.0), ground_mat)
+
+    # Ellipsoid (stretched sphere)
+    ellipsoid_mat = Material(albedo=Vec3(0.1, 0.7, 0.4), specular=0.6, roughness=0.2, reflectivity=0.15)
+    scene.add_object(
+        lambda p: sdf_ellipsoid(p, Vec3(-3, 1.2, 1), Vec3(0.8, 1.2, 0.6)),
+        ellipsoid_mat
+    )
+
+    # Rounded box
+    rbox_mat = Material(albedo=Vec3(0.8, 0.5, 0.15), specular=0.5, roughness=0.25, reflectivity=0.2)
+    scene.add_object(
+        lambda p: sdf_rounded_box(p, Vec3(0, 0.7, 0), Vec3(0.7, 0.7, 0.7), 0.15),
+        rbox_mat
+    )
+
+    # Link (chain)
+    link_mat = Material(albedo=Vec3(0.75, 0.75, 0.8), specular=0.8, roughness=0.1, reflectivity=0.6)
+    scene.add_object(
+        lambda p: sdf_link(p, Vec3(3, 1.5, 0), 0.5, 0.5, 0.12),
+        link_mat
+    )
+
+    # Mirror sphere
+    mirror_mat = Material(albedo=Vec3(0.95, 0.95, 0.95), specular=1.0, roughness=0.0, reflectivity=0.95, fresnel=0.02)
+    scene.add_object(
+        lambda p: sdf_sphere(p, Vec3(-1.5, 0.8, -2), 0.8),
+        mirror_mat
+    )
+
+    # Glass sphere
+    glass_mat = Material(albedo=Vec3(0.95, 0.95, 0.98), specular=0.9, roughness=0.02,
+                         reflectivity=0.3, fresnel=0.04, transparency=0.9, ior=1.5)
+    scene.add_object(
+        lambda p: sdf_sphere(p, Vec3(2, 1.0, -2), 1.0),
+        glass_mat
+    )
+
+    # Three-point lighting
+    scene.add_directional_light(Vec3(0.5, 0.8, 0.3), Vec3(1.0, 0.95, 0.85), 1.2)  # Key
+    scene.add_directional_light(Vec3(-0.7, 0.3, 0.5), Vec3(0.35, 0.45, 0.65), 0.4)  # Fill
+    scene.add_point_light(Vec3(-2, 5, -5), Vec3(1.0, 0.9, 0.85), 3.0)  # Back
+
+    return scene
+
+
 # Scene registry
 SCENES = {
     'demo': build_demo_scene,
@@ -309,4 +372,5 @@ SCENES = {
     'glass': build_glass_scene,
     'fractal': build_fractal_scene,
     'studio': build_studio_scene,
+    'showcase': build_showcase_scene,
 }

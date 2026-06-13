@@ -1,0 +1,108 @@
+# Showcase scene configuration demonstrating all primitives
+# Including new primitives: ellipsoid, rounded_box, link
+
+scene:
+  objects:
+    # Ground plane with checkerboard
+    - type: plane
+      height: 0.0
+      material:
+        albedo: [0.85, 0.85, 0.85]
+        specular: 0.3
+        roughness: 0.5
+        reflectivity: 0.15
+        checker_scale: 2.0
+        checker_color: [0.35, 0.35, 0.38]
+
+    # Glass sphere
+    - type: sphere
+      center: [2, 1.0, -2]
+      radius: 1.0
+      material:
+        albedo: [0.95, 0.95, 0.98]
+        specular: 0.9
+        roughness: 0.02
+        reflectivity: 0.3
+        fresnel: 0.04
+        transparency: 0.9
+        ior: 1.5
+
+    # Mirror sphere
+    - type: sphere
+      center: [-1.5, 0.8, -2]
+      radius: 0.8
+      material:
+        albedo: [0.95, 0.95, 0.95]
+        specular: 1.0
+        roughness: 0.0
+        reflectivity: 0.95
+        fresnel: 0.02
+
+    # Ellipsoid (stretched sphere)
+    - type: ellipsoid
+      center: [-3, 1.2, 1]
+      radii: [0.8, 1.2, 0.6]
+      material:
+        albedo: [0.1, 0.7, 0.4]
+        specular: 0.6
+        roughness: 0.2
+        reflectivity: 0.15
+
+    # Rounded box
+    - type: rounded_box
+      center: [0, 0.7, 0]
+      half_extents: [0.7, 0.7, 0.7]
+      radius: 0.15
+      material:
+        albedo: [0.8, 0.5, 0.15]
+        specular: 0.5
+        roughness: 0.25
+        reflectivity: 0.2
+
+    # Link (chain)
+    - type: link
+      center: [3, 1.5, 0]
+      le: 0.5
+      r1: 0.5
+      r2: 0.12
+      material:
+        albedo: [0.75, 0.75, 0.8]
+        specular: 0.8
+        roughness: 0.1
+        reflectivity: 0.6
+
+  lights:
+    - type: directional
+      direction: [0.5, 0.8, 0.3]
+      color: [1.0, 0.95, 0.85]
+      intensity: 1.2
+
+    - type: directional
+      direction: [-0.7, 0.3, 0.5]
+      color: [0.35, 0.45, 0.65]
+      intensity: 0.4
+
+    - type: point
+      position: [-2, 5, -5]
+      color: [1.0, 0.9, 0.85]
+      intensity: 3.0
+
+renderer:
+  width: 800
+  height: 600
+  samples: 1
+  max_steps: 128
+  max_bounces: 3
+  enable_shadows: true
+  enable_ao: false
+
+camera:
+  position: [8, 4, 8]
+  target: [0, 1, 0]
+  fov: 55
+
+tonemap:
+  method: aces
+  exposure: 1.0
+
+output: showcase_config.png

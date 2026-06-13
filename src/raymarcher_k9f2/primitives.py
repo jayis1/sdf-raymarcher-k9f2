@@ -191,3 +191,78 @@ def sdf_mandelbulb(p: Vec3, center: Vec3, scale: float = 1.0, power: float = 8.0
         ) + (p - center) * scale
 
     return 0.5 * math.log(max(r, 1e-12)) * r / max(dr, 1.0) / scale
+
+
+def sdf_ellipsoid(p: Vec3, center: Vec3, radii: Vec3) -> float:
+    """Signed distance to an ellipsoid (approximate).
+
+    Uses the standard approximation: scale to unit sphere, compute
+    sphere SDF, then scale back by the inverse of the largest axis.
+
+    Args:
+        p: Point to evaluate.
+        center: Center of the ellipsoid.
+        radii: Semi-axis lengths (radius along x, y, z).
+
+    Returns:
+        Approximate signed distance to the ellipsoid surface.
+    """
+    q = (p - center) * Vec3(1.0 / max(radii.x, 1e-12),
+                              1.0 / max(radii.y, 1e-12),
+                              1.0 / max(radii.z, 1e-12))
+    d = q.length() - 1.0
+    # Scale back by approximate gradient magnitude
+    return d * min(min(radii.x, radii.y), radii.z)
+
+
+def sdf_rounded_box(p: Vec3, center: Vec3, half_extents: Vec3, radius: float) -> float:
+    """Signed distance to a rounded box (box with rounded edges and corners).
+
+    Args:
+        p: Point to evaluate.
+        center: Center of the box.
+        half_extents: Half-size along each axis (before rounding).
+        radius: Rounding radius for edges and corners.
+
+    Returns:
+        Signed distance to the rounded box surface.
+    """
+    q = (p - center)
+    qx, qy, qz = abs(q.x), abs(q.y), abs(q.z)
+    # Subtract rounding radius from the half-extents
+    inner = Vec3(
+        max(qx - half_extents.x + radius, 0.0),
+        max(qy - half_extents.y + radius, 0.0),
+        max(qz - half_extents.z + radius, 0.0),
+    )
+    outside_dist = inner.length() - radius
+    # Inside distance
+    inner_dist = min(
+        half_extents.x - radius - qx,
+        half_extents.y - radius - qy,
+        half_extents.z - radius - qz,
+    )
+    if inner_dist > 0:
+        return -inner_dist
+    return outside_dist
+
+
+def sdf_link(p: Vec3, center: Vec3, le: float, r1: float, r2: float) -> float:
+    """Signed distance to a torus link (two intersecting tori forming a chain link).
+
+    Args:
+        p: Point to evaluate.
+        center: Center of the link.
+        le: Length of the link (distance between the two ring centers).
+        r1: Major radius of each torus ring.
+        r2: Minor radius (tube thickness).
+
+    Returns:
+        Signed distance to the link surface.
+    """
+    q = p - center
+    qx = abs(q.x) - le
+    qy = q.y
+    qz = q.z
+    d = math.sqrt(qx * qx + qy * qy) - r1
+    return math.sqrt(d * d + qz * qz) - r2

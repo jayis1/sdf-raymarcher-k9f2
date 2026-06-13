@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sdf-raymarcher-k9f2"
-version = "1.1.0"
-description = "A pure-Python signed distance field (SDF) ray marcher with physically-based lighting, reflections, refractions, and more."
+version = "2.0.0"
+description = "A pure-Python signed distance field (SDF) ray marcher with physically-based lighting, reflections, refractions, tone mapping, SDF transforms, multiprocessing, and more."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 authors = [
     {name = "SDF Ray Marcher Project"},
 ]
-keywords = ["ray-marching", "sdf", "signed-distance-field", "3d-rendering", "graphics"]
+keywords = ["ray-marching", "sdf", "signed-distance-field", "3d-rendering", "graphics", "tone-mapping", "physically-based-rendering"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Education",
     "License :: OSI Approved :: MIT License",

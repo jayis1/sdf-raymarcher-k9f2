@@ -524,6 +524,7 @@ class TestSceneBuilders:
             'glass': Camera(Vec3(5, 3.5, 8), Vec3(0, 1, 0), fov=50),
             'fractal': Camera(Vec3(4, 3, 4), Vec3(0, 1.5, 0), fov=50),
             'studio': Camera(Vec3(6, 3, 6), Vec3(0, 1, 0), fov=50),
+            'showcase': Camera(Vec3(8, 4, 8), Vec3(0, 1, 0), fov=55),
         }
         cam = cam_map[name]
         img = renderer.render(scene, cam)
