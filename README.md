@@ -1,237 +1,469 @@
 # SDF Ray Marcher k9f2
 
-A pure-Python signed distance field (SDF) ray marcher that renders 3D scenes with physically-based lighting, reflections, refractions (glass), subsurface scattering, soft shadows, ambient occlusion, depth-of-field, and procedural fractals — all without any GPU or graphics API.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://img.shields.io/badge/tests-109%2B-green.svg)](tests/)
 
-## How It Works
+A pure-Python signed distance field (SDF) ray marcher that renders 3D scenes with
+physically-based lighting, reflections, refractions (glass), subsurface scattering,
+soft shadows, ambient occlusion, depth-of-field, animation, and procedural fractals
+— all without any GPU or graphics API.
 
-The renderer uses **ray marching**: for each pixel, a ray is cast from the camera through the scene. At each step, the ray advances by the distance to the closest surface (the signed distance field value). This continues until the ray either hits a surface (distance < epsilon) or escapes to infinity.
+```
+    ┌──────────────────────────────────────────────────────────┐
+    │                                                          │
+    │   ╔════╗          ┌──┐                                   │
+    │   ║    ║   ┌──────┘  └──────┐   ◉ Glass sphere          │
+    │   ║    ║   │   Torus        │   ● Reflective sphere      │
+    │   ╚════╝   └───────────────┘   ■ Box with shadows         │
+    │                                                          │
+    │   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │
+    │   ░░░░░░░░░░░░ Checkerboard Ground ░░░░░░░░░░░░░░░░░░  │
+    └──────────────────────────────────────────────────────────┘
+```
 
-### Key Concepts
+## Table of Contents
 
-- **Signed Distance Fields (SDFs)**: Each object is defined by a mathematical function that returns the shortest distance from any point in space to the surface. Negative values mean "inside" the object.
-- **Ray Marching**: Rays advance through the scene in adaptive steps, with step size determined by the SDF value — fast in open space, slow near surfaces.
-- **Normal Estimation**: Surface normals are computed via central finite differences of the SDF gradient.
-- **CSG Operations**: Boolean union, subtraction, intersection, and smooth blending allow composing complex shapes from primitives.
-- **Physically-Based Shading**: Blinn-Phong specular, Lambert diffuse, Schlick Fresnel for reflections.
-- **Refraction**: Snell's law with total internal reflection, Beer's law absorption for colored glass.
-- **Subsurface Scattering**: Approximation via back-light transmission for wax/skin-like materials.
-- **Soft Shadows**: By tracking closest approach distance along shadow rays, producing realistic penumbra.
-- **Ambient Occlusion**: Estimated by sampling the SDF along the surface normal to detect nearby geometry.
-- **Depth of Field**: Thin-lens camera model with disk-sampled aperture for bokeh effects.
-- **Procedural Patterns**: Checkerboard materials applied per-pixel without textures.
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [CLI Reference](#cli-reference)
+- [Programmatic Usage](#programmatic-usage)
+- [Scene Configuration](#scene-configuration)
+- [Architecture](#architecture)
+- [Primitives Reference](#primitives-reference)
+- [CSG Operations](#csg-operations)
+- [Material Properties](#material-properties)
+- [Material Presets](#material-presets)
+- [Built-in Scenes](#built-in-scenes)
+- [Testing](#testing)
+- [Performance](#performance)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Changelog](#changelog)
 
-### Supported Primitives
+## Features
 
-| Primitive | Description |
-|-----------|-------------|
-| Sphere | Classic SDF sphere |
-| Box | Axis-aligned box |
-| Torus | Ring-shaped torus |
-| Cylinder | Vertical cylinder |
-| Capsule | Line-segment swept sphere |
-| Plane | Infinite ground plane |
-| Cone | Upward-pointing cone |
-| Hex Prism | Hexagonal prism |
-| Mandelbulb | Fractal distance estimator |
+- **Pure Python** — no GPU, no C extensions, no OpenGL. Just NumPy + Pillow.
+- **Physically-based shading** — Blinn-Phong specular, Lambert diffuse, Schlick Fresnel
+- **Refractions** — Snell's law with total internal reflection, Beer's law absorption
+- **Reflections** — Recursive mirror reflections with Fresnel blending
+- **Subsurface scattering** — Approximated via back-light transmission
+- **Soft shadows** — Penumbra via closest approach distance
+- **Ambient occlusion** — Estimated by sampling SDF along surface normals
+- **Depth of field** — Thin-lens camera model with disk-sampled aperture
+- **9 SDF primitives** — Sphere, box, torus, cylinder, capsule, plane, cone, hex prism, Mandelbulb
+- **CSG operations** — Union, smooth union, subtraction, intersection, smooth variants
+- **Procedural patterns** — Checkerboard, stripes, gradient
+- **7 built-in scenes** — Demo, chess, terrain, abstract, glass, fractal, studio
+- **YAML/TOML config** — Define scenes declaratively without writing Python
+- **CLI interface** — Render from the command line with full control
+- **Animation support** — Render frame sequences for rotating cameras
+- **Installable package** — `pip install -e .` for development
+- **Comprehensive tests** — 109+ tests covering all modules
 
-### CSG Operations
+## Installation
 
-- `sdf_union` — Boolean union (A ∪ B)
-- `sdf_smooth_union` — Smooth blended union with configurable radius
-- `sdf_smooth_subtraction` — Smooth blended subtraction
-- `sdf_subtraction` — Boolean subtraction (A − B)
-- `sdf_intersection` — Boolean intersection (A ∩ B)
-
-### Material Properties
-
-| Property | Description |
-|----------|-------------|
-| `albedo` | Base diffuse color |
-| `specular` | Specular highlight strength (0–1) |
-| `roughness` | 0 = mirror, 1 = fully diffuse |
-| `reflectivity` | 0 = no reflection, 1 = perfect mirror |
-| `emissive` | Self-illumination color (bypasses shading) |
-| `fresnel` | Schlick Fresnel base reflectivity |
-| `ior` | Index of refraction (1.0=air, 1.33=water, 1.5=glass) |
-| `transparency` | 0 = opaque, 1 = fully transparent (enables refraction) |
-| `subsurface` | Subsurface scattering strength |
-| `subsurface_color` | SSS tint color |
-| `checker_scale` | If > 0, applies procedural checkerboard pattern |
-| `checker_color` | Secondary checkerboard color |
-
-## Usage
-
-### Setup
+### From source (recommended)
 
 ```bash
-cd ~/projects/sdf-raymarcher-k9f2
+git clone https://github.com/jayis1/sdf-raymarcher-k9f2.git
+cd sdf-raymarcher-k9f2
+python -m venv venv
 source venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-### Render a scene
-
-```bash
-# Default demo scene
-python3 raymarcher.py
-
-# High-quality render with AO and soft shadows
-python3 raymarcher.py --ao --soft-shadow --samples 4
-
-# Chess scene at higher resolution
-python3 raymarcher.py --scene chess --width 1280 --height 960 --output chess.png
-
-# Glass scene (showcasing refraction)
-python3 raymarcher.py --scene glass --width 800 --height 600
-
-# Fractal scene (Mandelbulb)
-python3 raymarcher.py --scene fractal --width 640 --height 480
-
-# With depth of field
-python3 raymarcher.py --scene demo --dof 10 --aperture 0.15
-
-# Abstract animation (8 frames)
-python3 raymarcher.py --scene abstract --animate 8
-
-# Terrain with no shadows (faster)
-python3 raymarcher.py --scene terrain --no-shadow --output terrain.png
-
-# Quiet mode (suppress progress)
-python3 raymarcher.py --scene demo --quiet --output render.png
-```
-
-### All Options
-
-```
-  --width W          Image width (default: 800)
-  --height H         Image height (default: 600)
-  --samples N        Samples per pixel for anti-aliasing (default: 1)
-  --output PATH      Output file path (default: output.png)
-  --scene NAME       Scene: demo, chess, terrain, abstract, glass, fractal (default: demo)
-  --animate N        Render N animation frames (default: 1, single frame)
-  --max-bounces N    Max reflection/refraction bounces (default: 3)
-  --ao               Enable ambient occlusion (slower)
-  --soft-shadow      Enable soft shadows (slower)
-  --no-shadow        Disable shadows entirely
-  --dof DIST         Depth-of-field focal distance (0 = disabled)
-  --aperture FLOAT   DOF aperture size (default: 0.1)
-  --quiet            Suppress progress output
-  --steps N          Max ray march steps per ray (default: 128)
-```
-
-### Built-in Scenes
-
-- **demo** — Various primitives (sphere, box, torus, capsule, smooth union, cylinder) on a reflective checker ground
-- **chess** — A chess board with king and pawn pieces, atmospheric fog
-- **terrain** — Procedural terrain with animated water plane and fog
-- **abstract** — Morphing smooth-union blob animation
-- **glass** — Refractive glass spheres/cubes, subsurface scattering, water sphere
-- **fractal** — Animated Mandelbulb fractal with varying power parameter
-
-### Programmatic Usage
-
-```python
-from raymarcher import (
-    Scene, Camera, Renderer, RayMarcher, Material, Vec3,
-    sdf_sphere, sdf_smooth_union
-)
-
-scene = Scene()
-scene.add_object(
-    lambda p: sdf_sphere(p, Vec3(0, 1, 0), 1.0),
-    Material(albedo=Vec3(1, 0, 0), reflectivity=0.5)
-)
-scene.add_directional_light(Vec3(0.5, 0.8, 0.3))
-
-# Glass material example
-glass = Material(
-    albedo=Vec3(0.95, 0.95, 0.98),
-    transparency=0.9, ior=1.5, fresnel=0.04,
-    specular=0.9, roughness=0.02,
-)
-scene.add_object(
-    lambda p: sdf_sphere(p, Vec3(3, 1, 0), 1.0),
-    glass
-)
-
-marcher = RayMarcher(enable_shadows=True, enable_ao=True, max_bounces=3)
-renderer = Renderer(width=640, height=480, marcher=marcher)
-
-# Camera with depth of field
-camera = Camera(
-    Vec3(5, 3, 5), Vec3(0, 1, 0), fov=55,
-    focal_distance=8.0, aperture=0.1
-)
-
-img = renderer.render(scene, camera)
-renderer.save(img, 'my_scene.png')
-```
-
-## Architecture
-
-```
-raymarcher.py
-├── Vec3              — 3D vector math (add, sub, mul, dot, cross, reflect, refract, pow, ...)
-├── Material           — Surface properties (albedo, IOR, transparency, SSS, checkerboard, ...)
-├── SDF Primitives    — sphere, box, torus, cylinder, capsule, plane, cone, hex_prism, mandelbulb
-├── CSG Operations    — union, smooth_union, smooth_subtraction, subtraction, intersection
-├── Procedural Patterns — checkerboard
-├── SceneObject        — SDF function + material + optional interior material
-├── Scene              — Object collection, lights, sky evaluation, fog
-├── RayMarcher         — Core engine (march, normal, AO, shadow, SSS, shade, trace with refraction)
-├── Camera             — Perspective camera with DOF (thin lens model)
-└── Renderer           — Pixel loop, anti-aliasing, gamma correction, PNG output
-
-test_raymarcher.py
-└── 90 tests covering Vec3 math, SDF primitives, CSG ops, materials, scenes, rendering
-
-test_bugs.py
-└── 19 bug-specific tests covering FOV, entering detection, refraction IOR, cone SDF, aspect ratio, etc.
-```
-
-## Testing
-
-```bash
-source venv/bin/activate
-python3 test_raymarcher.py
-```
-
-The test suite covers:
-- Vec3 arithmetic, normalization, reflection, refraction, lerp, clamp, pow
-- All SDF primitives (surface, inside, outside, distance accuracy)
-- CSG operations (union, smooth union, subtraction, intersection)
-- Checkerboard pattern
-- Material properties
-- Scene construction, map, map_distance
-- Ray marching (hit detection, normal computation, shadow, AO)
-- Camera ray generation including DOF
-- All 6 scene builders
-- Full rendering pipeline for all scenes
-- Refraction trace validation
-
-## Requirements
+### Dependencies
 
 - Python 3.11+
 - NumPy
 - Pillow
+- PyYAML (for config files, optional)
+- toml (for TOML config, optional)
+- pytest (for development)
 
-## Known Issues (Resolved)
+## Quick Start
 
-The following bugs were found and fixed during the Phase 3 bug hunt:
+### Command Line
 
-1. **Camera FOV double-scaling (Critical)**: `Renderer.render()` pre-scaled `u,v` coordinates by `half_w/half_h` and then `Camera.get_ray()` applied FOV scaling again internally, effectively doubling the FOV. This made rendered images appear zoomed in compared to the specified FOV. **Fix**: Removed pre-scaling from `render()`, changed `get_ray()` to accept an `aspect` parameter, and pass normalized `[-0.5, 0.5]` coordinates directly.
+```bash
+# Render the demo scene
+raymarcher-k9f2 --scene demo --output demo.png
 
-2. **Ray march entering detection (Critical)**: `march()` determined whether a ray was entering or exiting an object based on the SDF value at the hit point, which is always near `surface_epsilon` (ambiguous). This caused refraction to use the wrong IOR when exiting glass objects. **Fix**: Check the SDF at the ray *origin* instead — if the origin is inside an object (SDF < 0), the ray is exiting.
+# High-quality render with AO and soft shadows
+raymarcher-k9f2 --scene glass --ao --soft-shadow --samples 4 --output glass_hq.png
 
-3. **Refraction IOR flip bug (Critical)**: When exiting a glass object, `eta` was set to `1/ior` (same as entering) instead of `ior`. Per Snell's law, `eta = n1/n2`: entering is `1.0/1.5 ≈ 0.667` (air→glass), but exiting should be `1.5` (glass→air). **Fix**: Set `eta = ior` when exiting.
+# Fractal scene at high resolution
+raymarcher-k9f2 --scene fractal --width 1280 --height 960 --output fractal.png
 
-4. **Cone SDF incorrect (Moderate)**: The cone SDF didn't properly cap the base or handle inside/outside regions. Points below the base got wrong distances, and the formula didn't match the standard capped cone SDF. **Fix**: Rewrote with proper base capping using the `max(cone_dist, base_dist)` intersection.
+# Depth of field
+raymarcher-k9f2 --scene demo --dof 10 --aperture 0.15 --output dof.png
 
-5. **Hex prism dead code (Minor)**: `sdf_hex_prism()` computed `d_xz` on line 259 but then immediately overwrote it with `d_hex` computed separately. The initial computation and misleading comment were removed.
+# Animation (8 frames)
+raymarcher-k9f2 --scene abstract --animate 8 --output frame.png
 
-6. **Dead code in refraction IOR logic (Minor)**: Lines 707-708 assigned `eta = ior` and then immediately overwrote with `eta = 1.0 / ior` with a comment explaining the correction. This was confusing dead code. **Fix**: Removed the dead assignment and clarified the comment.
+# From config file
+raymarcher-k9f2 --config examples/scene.yaml --output custom.png
 
-7. **Renderer dead code (Minor)**: `render()` computed `fov_rad`, `half_h`, `half_w`, `forward`, `right`, `true_up` but never used them — these were leftover from when rendering was done directly in the method. **Fix**: Removed the unused computations.
+# List available scenes
+raymarcher-k9f2 --list-scenes
+
+# Version info
+raymarcher-k9f2 --version
+```
+
+### Programmatic
+
+```python
+from raymarcher_k9f2 import (
+    Scene, Camera, Renderer, RayMarcher, Material, Vec3,
+    sdf_sphere, sdf_plane,
+)
+
+scene = Scene()
+
+# Add a red sphere
+scene.add_object(
+    lambda p: sdf_sphere(p, Vec3(0, 1, 0), 1.0),
+    Material(albedo=Vec3(1, 0, 0), reflectivity=0.5)
+)
+
+# Add a ground plane
+scene.add_object(
+    lambda p: sdf_plane(p, height=0.0),
+    Material(albedo=Vec3(0.5, 0.5, 0.5), checker_scale=1.0)
+)
+
+# Add lighting
+scene.add_directional_light(Vec3(0.5, 0.8, 0.3))
+
+# Render
+marcher = RayMarcher(enable_shadows=True, enable_ao=True, max_bounces=3)
+renderer = Renderer(width=640, height=480, marcher=marcher)
+camera = Camera(Vec3(5, 3, 5), Vec3(0, 1, 0), fov=55, focal_distance=8.0, aperture=0.1)
+
+img = renderer.render(scene, camera)
+renderer.save(img, 'my_scene.png')
+
+# Or get a PIL Image directly
+pil_img = renderer.render_to_pil(scene, camera)
+pil_img.show()
+```
+
+### Using Material Presets
+
+```python
+from raymarcher_k9f2 import Scene, Vec3, sdf_sphere
+from raymarcher_k9f2.material import glass, gold, mirror, water, checkerboard
+
+scene = Scene()
+
+# Glass sphere (IOR 1.5)
+scene.add_object(lambda p: sdf_sphere(p, Vec3(0, 1, 0), 1.0), glass())
+
+# Gold sphere
+scene.add_object(lambda p: sdf_sphere(p, Vec3(3, 1, 0), 1.0), gold())
+
+# Mirror sphere
+scene.add_object(lambda p: sdf_sphere(p, Vec3(-3, 1, 0), 1.0), mirror())
+
+# Checkerboard ground
+scene.add_object(lambda p: sdf_sphere(p, Vec3(0, -0.01, 0), 100.0), checkerboard(scale=2.0))
+```
+
+## CLI Reference
+
+```
+usage: raymarcher-k9f2 [-h] [--width W] [--height H] [--samples N]
+                       [--output PATH] [--scene NAME] [--config FILE]
+                       [--animate N] [--max-bounces N] [--ao]
+                       [--soft-shadow] [--no-shadow] [--dof DIST]
+                       [--aperture FLOAT] [--gamma FLOAT] [--exposure FLOAT]
+                       [--quiet] [--verbose] [--steps N] [--list-scenes]
+                       [--version]
+
+Options:
+  --width W          Image width (default: 800)
+  --height H         Image height (default: 600)
+  --samples N        Samples per pixel for anti-aliasing (default: 1)
+  --output PATH      Output file path (default: output.png)
+  --scene NAME       Built-in scene: demo, chess, terrain, abstract,
+                     glass, fractal, studio (default: demo)
+  --config FILE      Path to YAML/TOML scene config (overrides --scene)
+  --animate N        Number of animation frames (default: 1)
+  --max-bounces N    Max reflection/refraction bounces (default: 3)
+  --ao               Enable ambient occlusion
+  --soft-shadow      Enable soft shadows
+  --no-shadow        Disable shadows entirely
+  --dof DIST         Depth-of-field focal distance (0 = disabled)
+  --aperture FLOAT   DOF aperture size (default: 0.1)
+  --gamma FLOAT      Gamma correction exponent (default: 2.2)
+  --exposure FLOAT   Linear exposure multiplier (default: 1.0)
+  --quiet            Suppress progress output
+  --verbose          Enable debug logging
+  --steps N          Max ray march steps per ray (default: 128)
+  --list-scenes      List available scenes and exit
+  --version          Print version and exit
+```
+
+## Scene Configuration
+
+Define scenes declaratively using YAML or TOML config files:
+
+```yaml
+scene:
+  width: 800
+  height: 600
+  output: my_scene.png
+  camera:
+    position: [7, 4, 7]
+    target: [0, 1, 0]
+    fov: 55
+  marcher:
+    max_steps: 128
+    max_bounces: 3
+    enable_shadows: true
+  objects:
+    - type: sphere
+      center: [0, 1, 0]
+      radius: 1.0
+      material:
+        albedo: [0.9, 0.2, 0.15]
+        specular: 0.9
+        roughness: 0.05
+        reflectivity: 0.4
+    - type: plane
+      height: 0.0
+      material:
+        albedo: [0.7, 0.7, 0.7]
+        checker_scale: 1.0
+  lights:
+    - type: directional
+      direction: [0.5, 0.8, 0.3]
+      color: [1.0, 0.95, 0.85]
+      intensity: 1.0
+```
+
+Render with: `raymarcher-k9f2 --config examples/scene.yaml`
+
+Supported object types: `sphere`, `box`, `torus`, `cylinder`, `capsule`, `plane`, `cone`.
+
+## Architecture
+
+```
+src/raymarcher_k9f2/
+├── __init__.py          — Package entry point, public API exports
+├── vec3.py              — Vec3 class: 3D vector math (add, dot, cross, reflect, refract, ...)
+├── material.py          — Material dataclass + presets (glass, gold, mirror, water, ...)
+├── primitives.py         — SDF functions (sphere, box, torus, cylinder, capsule, plane, cone, hex_prism, mandelbulb)
+├── csg.py               — CSG operations (union, smooth_union, subtraction, intersection, ...)
+├── patterns.py           — Procedural patterns (checkerboard, stripes, gradient)
+├── scene.py             — Scene, SceneObject, PointLight, DirectionalLight, HitResult
+├── marcher.py            — RayMarcher: core engine (march, normal, AO, shadow, shade, trace)
+├── camera.py             — Camera: perspective camera with thin-lens DOF
+├── renderer.py           — Renderer: pixel loop, AA, gamma, save, render_to_pil
+├── scenes.py             — Built-in scene builders (demo, chess, terrain, abstract, glass, fractal, studio)
+├── config.py             — YAML/TOML config loader and scene builder
+└── cli.py                — CLI entry point (argparse)
+tests/
+└── test_raymarcher.py   — 109+ pytest-compatible tests
+examples/
+├── scene.yaml            — Example YAML config
+├── simple_sphere.py      — Simple sphere example
+└── glass_scene.py        — Glass/refraction example
+```
+
+### Data Flow
+
+```
+Camera.get_ray(u, v) → (origin, direction)
+        │
+        ▼
+RayMarcher.trace(origin, direction, scene)
+        │
+        ├── RayMarcher.march() → HitResult (distance, material, entering)
+        │       └── Scene.map() → closest SDF distance + material
+        │
+        ├── RayMarcher.compute_normal() → surface normal
+        │
+        ├── RayMarcher.shade() → color with lighting
+        │       ├── Ambient + optional AO
+        │       ├── Diffuse + Specular (Blinn-Phong)
+        │       ├── Soft/Hard shadows
+        │       └── Subsurface scattering
+        │
+        ├── Reflection: trace(reflect_dir) → blended via Fresnel
+        │
+        ├── Refraction: trace(refract_dir) → blended via Beer's law
+        │
+        └── Fog → final color
+                │
+                ▼
+Renderer.render() → numpy array → save() → PNG
+```
+
+## Primitives Reference
+
+| Primitive | Function | Parameters |
+|-----------|----------|------------|
+| Sphere | `sdf_sphere(p, center, radius)` | center, radius |
+| Box | `sdf_box(p, center, half_extents)` | center, half_extents (Vec3) |
+| Torus | `sdf_torus(p, center, major_r, minor_r)` | center, major_r, minor_r |
+| Cylinder | `sdf_cylinder(p, center, radius, half_height)` | center, radius, half_height |
+| Capsule | `sdf_capsule(p, a, b, radius)` | endpoints a, b, radius |
+| Plane | `sdf_plane(p, height)` | height (Y position) |
+| Cone | `sdf_cone(p, center, half_angle, height)` | center, half_angle (radians), height |
+| Hex Prism | `sdf_hex_prism(p, center, radius, half_height)` | center, radius, half_height |
+| Mandelbulb | `sdf_mandelbulb(p, center, scale, power, iterations)` | center, scale, power, iterations |
+
+## CSG Operations
+
+| Operation | Function | Description |
+|-----------|----------|-------------|
+| Union | `sdf_union(d1, d2)` | Boolean union (min) |
+| Smooth Union | `sdf_smooth_union(d1, d2, k)` | Blended union with radius k |
+| Subtraction | `sdf_subtraction(d1, d2)` | Boolean subtraction (A - B) |
+| Smooth Subtraction | `sdf_smooth_subtraction(d1, d2, k)` | Blended subtraction |
+| Intersection | `sdf_intersection(d1, d2)` | Boolean intersection (max) |
+| Smooth Intersection | `sdf_smooth_intersection(d1, d2, k)` | Blended intersection |
+
+## Material Properties
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `albedo` | Vec3 | (0.8, 0.8, 0.8) | Base diffuse color |
+| `specular` | float | 0.5 | Specular highlight strength (0–1) |
+| `roughness` | float | 0.3 | 0 = mirror, 1 = fully diffuse |
+| `reflectivity` | float | 0.0 | Mirror reflection strength (0–1) |
+| `emissive` | Vec3 | (0, 0, 0) | Self-illumination color |
+| `fresnel` | float | 0.04 | Schlick Fresnel base reflectivity |
+| `ior` | float | 1.5 | Index of refraction |
+| `transparency` | float | 0.0 | Transparency (0=opaque, 1=glass) |
+| `subsurface` | float | 0.0 | Subsurface scattering strength |
+| `subsurface_color` | Vec3 | (0.5, 0.2, 0.1) | SSS tint color |
+| `checker_scale` | float | 0.0 | Checkerboard scale (0=off) |
+| `checker_color` | Vec3 | (0.2, 0.2, 0.2) | Secondary checkerboard color |
+
+## Material Presets
+
+| Preset | Function | Description |
+|--------|----------|-------------|
+| Red Plastic | `red_plastic()` | Classic red diffuse |
+| Blue Plastic | `blue_plastic()` | Blue diffuse |
+| Mirror | `mirror()` | Perfect mirror (95% reflectivity) |
+| Glass | `glass(ior=1.5)` | Transparent glass |
+| Water | `water()` | Water (IOR=1.33) |
+| Gold | `gold()` | Gold metallic |
+| Checkerboard | `checkerboard(scale, light, dark)` | Checkerboard pattern |
+
+## Built-in Scenes
+
+| Scene | Description | Key Features |
+|-------|-------------|--------------|
+| `demo` | Various primitives on checker ground | Sphere, box, torus, capsule, smooth union, cylinder |
+| `chess` | Chess board with king and pawn | Fog, reflectivity, smooth unions |
+| `terrain` | Procedural terrain with animated water | Animated water, fog |
+| `abstract` | Morphing smooth-union blob animation | Animation, smooth blending |
+| `glass` | Refractive glass, SSS, water sphere | Refraction, SSS, glass |
+| `fractal` | Mandelbulb with animated power | Fractal, fog |
+| `studio` | Three-point lighting showcase | Gold, glass, emissive, matte |
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test classes
+pytest tests/ -v -k TestVec3
+pytest tests/ -v -k TestSDFPrimitives
+pytest tests/ -v -k TestRefraction
+
+# Run with coverage
+pytest tests/ -v --cov=raymarcher_k9f2
+```
+
+The test suite includes 109+ tests covering:
+- Vec3 arithmetic, normalization, reflection, refraction, lerp, clamp, pow
+- All SDF primitives (surface, inside, outside, distance accuracy)
+- CSG operations (union, smooth union, subtraction, intersection)
+- Procedural patterns (checkerboard, stripes, gradient)
+- Material properties, serialization, presets
+- Scene construction, map, map_distance
+- Ray marching (hit detection, normal computation, shadow, AO)
+- Camera ray generation including DOF
+- All 7 scene builders
+- Full rendering pipeline for all scenes
+- Refraction/reflection logic, IOR correctness
+- Config file loading and scene building
+- Performance smoke tests
+
+## Performance
+
+This is a pure-Python ray marcher — it prioritizes correctness and readability over speed.
+Typical rendering times (single-threaded):
+
+| Resolution | Scene | Time |
+|-----------|-------|------|
+| 320×240 | demo | ~5s |
+| 800×600 | demo | ~45s |
+| 800×600 | glass | ~120s |
+| 800×600 | fractal | ~180s |
+
+Tips for faster rendering:
+- Use `--no-shadow` to disable shadows (2-3× speedup)
+- Reduce `--steps` from 128 to 64 for simple scenes
+- Use `--samples 1` (default) — increase only for anti-aliasing
+- Render at lower resolution and upscale
+
+## Roadmap
+
+- [ ] Numpy-vectorized rendering for 10-50× speedup
+- [ ] Environment map / HDRI sky support
+- [ ] More primitives (ellipsoid, rounded box, link, etc.)
+- [ ] Displacement mapping
+- [ ] Volume rendering (clouds, smoke)
+- [ ] Multi-threaded rendering via multiprocessing
+- [ ] Interactive preview mode (progressive rendering)
+- [ ] Export to OBJ/STL for 3D printing
+- [ ] Scene graph with transforms (translate, rotate, scale)
+- [ ] Tone mapping operators (ACES, Reinhard)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on adding primitives, scenes, and features.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
+
+## Changelog
+
+### v1.1.0 — Comprehensive Improvement
+- **Architecture**: Restructured from single file to proper Python package with modular imports
+- **CLI**: Added `raymarcher-k9f2` command with `--config`, `--list-scenes`, `--version`, `--gamma`, `--exposure`, `--verbose` options
+- **Config**: Added YAML/TOML scene configuration support
+- **Materials**: Added presets (`glass()`, `gold()`, `mirror()`, `water()`, `checkerboard()`) and serialization (`to_dict()`/`from_dict()`)
+- **Patterns**: Added `stripes()` and `gradient()` procedural patterns
+- **CSG**: Added `sdf_smooth_intersection()`
+- **Scenes**: Added `studio` scene with three-point lighting
+- **Camera**: Added `to_dict()`/`from_dict()` serialization
+- **Renderer**: Added `gamma` and `exposure` parameters, `render_to_pil()` method
+- **Vec3**: Added `__eq__`, `to_tuple()`, `from_tuple()` methods
+- **CLI entry point**: Installable via `pip install -e .`
+- **Tests**: Migrated to pytest with 109+ tests in parametrized test classes
+- **CI**: Added GitHub Actions workflow for Python 3.11/3.12
+- **Docs**: Added CONTRIBUTING.md, LICENSE, comprehensive README with badges, TOC, and examples
+- **Examples**: Added `examples/` directory with YAML config and Python scripts
+- **pyproject.toml**: Proper package metadata, dependencies, console script entry point
+
+### v1.0.0 — Initial Release (Phase 1-3)
+- Core ray marching engine with 9 SDF primitives
+- Physically-based shading (Blinn-Phong, Fresnel)
+- Reflections, refractions (glass), subsurface scattering
+- Soft shadows, ambient occlusion, depth-of-field
+- 6 built-in scenes (demo, chess, terrain, abstract, glass, fractal)
+- 7 bug fixes from Phase 3 (3 critical, 1 moderate, 3 minor)
+- 109 tests (90 original + 19 bug-specific)

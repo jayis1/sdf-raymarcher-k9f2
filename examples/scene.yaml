@@ -1,0 +1,76 @@
+# Example scene configuration for SDF Ray Marcher k9f2
+# Usage: raymarcher-k9f2 --config examples/scene.yaml
+
+scene:
+  width: 800
+  height: 600
+  samples: 1
+  output: my_scene.png
+  gamma: 2.2
+  exposure: 1.0
+  fog_density: 0.01
+  fog_color: [0.7, 0.75, 0.85]
+
+  camera:
+    position: [7, 4, 7]
+    target: [0, 1, 0]
+    fov: 55
+    focal_distance: 0
+    aperture: 0.1
+
+  marcher:
+    max_steps: 128
+    max_bounces: 3
+    enable_shadows: true
+    enable_soft_shadows: false
+    enable_ao: false
+
+  objects:
+    - type: sphere
+      center: [0, 1, 0]
+      radius: 1.0
+      material:
+        albedo: [0.9, 0.2, 0.15]
+        specular: 0.9
+        roughness: 0.05
+        reflectivity: 0.4
+        fresnel: 0.05
+
+    - type: box
+      center: [3, 0.75, 1]
+      half_extents: [0.75, 0.75, 0.75]
+      material:
+        albedo: [0.2, 0.5, 0.9]
+        specular: 0.6
+        roughness: 0.2
+        reflectivity: 0.1
+
+    - type: torus
+      center: [-2.5, 0.8, 2.0]
+      major_r: 0.8
+      minor_r: 0.25
+      material:
+        albedo: [0.9, 0.85, 0.1]
+        specular: 0.7
+        roughness: 0.15
+
+    - type: plane
+      height: 0.0
+      material:
+        albedo: [0.7, 0.7, 0.7]
+        specular: 0.2
+        roughness: 0.7
+        reflectivity: 0.15
+        checker_scale: 1.0
+        checker_color: [0.3, 0.3, 0.35]
+
+  lights:
+    - type: directional
+      direction: [0.5, 0.8, 0.3]
+      color: [1.0, 0.95, 0.85]
+      intensity: 1.0
+
+    - type: point
+      position: [2, 3, -2]
+      color: [1.0, 0.8, 0.5]
+      intensity: 5.0

@@ -1,5 +1,16 @@
 venv/
 __pycache__/
 *.pyc
-test_*.png
+*.pyo
+*.egg-info/
+dist/
+build/
+*.png
+!docs/images/*.png
 output.png
+test_*.png
+.DS_Store
+*.swp
+*.swo
+*~
+.env
