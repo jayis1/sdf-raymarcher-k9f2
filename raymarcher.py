@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
 """
-SDF Ray Marcher — A pure-Python signed distance field ray marcher.
+SDF Ray Marcher k9f2 — A pure-Python signed distance field ray marcher.
 
 Renders 3D scenes using ray marching against analytic signed distance fields.
 Supports multiple primitives, materials, soft shadows, ambient occlusion,
-reflections, and animation.
+reflections, refractions (glass), subsurface scattering, depth-of-field,
+and animation.
 
 Usage:
     source venv/bin/activate
     python3 raymarcher.py [options]
 
 Options:
-    --width W        Image width (default: 800)
-    --height H       Image height (default: 600)
-    --samples N      Samples per pixel for anti-aliasing (default: 1)
-    --output PATH    Output file path (default: output.png)
-    --scene NAME     Scene to render: demo, chess, terrain, abstract (default: demo)
-    --animate N       Render N animation frames (default: 1, single frame)
-    --max-bounces N  Max reflection bounces (default: 3)
-    --ao             Enable ambient occlusion (slower)
-    --soft-shadow    Enable soft shadows (slower)
-    --no-shadow      Disable shadows entirely
+    --width W          Image width (default: 800)
+    --height H         Image height (default: 600)
+    --samples N        Samples per pixel for anti-aliasing (default: 1)
+    --output PATH      Output file path (default: output.png)
+    --scene NAME       Scene: demo, chess, terrain, abstract, glass, fractal (default: demo)
+    --animate N        Render N animation frames (default: 1, single frame)
+    --max-bounces N    Max reflection/refraction bounces (default: 3)
+    --ao               Enable ambient occlusion (slower)
+    --soft-shadow      Enable soft shadows (slower)
+    --no-shadow        Disable shadows entirely
+    --dof DIST         Depth-of-field focal distance (0 = disabled)
+    --aperture FLOAT   DOF aperture size (default: 0.1)
+    --quiet            Suppress progress output
+    --steps N          Max ray march steps per ray (default: 128)
 """
 
 import math
 import argparse
+import os
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
@@ -55,12 +61,13 @@ class Vec3:
         return Vec3(self.x - other.x, self.y - other.y, self.z - other.z)
 
     def __mul__(self, other) -> 'Vec3':
+        """Component-wise multiplication if other is Vec3, scalar otherwise."""
         if isinstance(other, Vec3):
             return Vec3(self.x * other.x, self.y * other.y, self.z * other.z)
         return Vec3(self.x * other, self.y * other, self.z * other)
 
     def __rmul__(self, scalar: float) -> 'Vec3':
-        return self.__mul__(scalar)
+        return Vec3(self.x * scalar, self.y * scalar, self.z * scalar)
 
     def __neg__(self) -> 'Vec3':
         return Vec3(-self.x, -self.y, -self.z)
@@ -81,6 +88,10 @@ class Vec3:
     def length(self) -> float:
         return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
 
+    def length_sq(self) -> float:
+        """Squared length — avoids sqrt when comparing distances."""
+        return self.x * self.x + self.y * self.y + self.z * self.z
+
     def normalized(self) -> 'Vec3':
         l = self.length()
         if l < 1e-12:
@@ -92,6 +103,20 @@ class Vec3:
         """Reflect this vector off a surface with given normal."""
         return self - normal * (2.0 * self.dot(normal))
 
+    def refract(self, normal: 'Vec3', eta: float) -> Optional['Vec3']:
+        """Refract this vector through a surface. Returns None for total internal reflection."""
+        cos_i = -(self.dot(normal))
+        if cos_i < 0:
+            # We're inside the object; flip normal and eta
+            cos_i = -cos_i
+            normal = -normal
+            eta = 1.0 / eta
+        sin_t2 = eta * eta * (1.0 - cos_i * cos_i)
+        if sin_t2 > 1.0:
+            return None  # Total internal reflection
+        cos_t = math.sqrt(1.0 - sin_t2)
+        return self * eta + normal * (eta * cos_i - cos_t)
+
     def lerp(self, other: 'Vec3', t: float) -> 'Vec3':
         return self * (1.0 - t) + other * t
 
@@ -100,6 +125,14 @@ class Vec3:
             max(lo, min(hi, self.x)),
             max(lo, min(hi, self.y)),
             max(lo, min(hi, self.z)),
+        )
+
+    def pow(self, exponent: float) -> 'Vec3':
+        """Component-wise power."""
+        return Vec3(
+            pow(max(self.x, 0.0), exponent),
+            pow(max(self.y, 0.0), exponent),
+            pow(max(self.z, 0.0), exponent),
         )
 
 
@@ -114,40 +147,71 @@ SKY_BLUE = Vec3(0.5, 0.7, 1.0)
 
 @dataclass
 class Material:
-    """Surface material properties."""
+    """Surface material properties.
+
+    Attributes:
+        albedo: Base diffuse color.
+        specular: Specular highlight strength (0–1).
+        roughness: 0 = mirror, 1 = fully diffuse.
+        reflectivity: 0 = no reflection, 1 = perfect mirror.
+        emissive: Emissive light color (bypasses shading when non-zero).
+        fresnel: Schlick Fresnel base reflectivity (typical: 0.04 for dielectrics).
+        ior: Index of refraction for transmissive materials (1.0 = air, 1.5 = glass, 2.42 = diamond).
+        transparency: 0 = opaque, 1 = fully transparent. Enables refraction when > 0.
+        subsurface: Subsurface scattering approximation strength (0 = none).
+        subsurface_color: Color tint for subsurface scattering.
+        checker_scale: If > 0, applies a procedural checkerboard pattern at this scale.
+        checker_color: Secondary checkerboard color.
+    """
     albedo: Vec3 = field(default_factory=lambda: Vec3(0.8, 0.8, 0.8))
-    specular: float = 0.5       # Specular highlight strength
-    roughness: float = 0.3      # 0=mirror, 1=diffuse
-    reflectivity: float = 0.0    # 0=no reflection, 1=perfect mirror
+    specular: float = 0.5
+    roughness: float = 0.3
+    reflectivity: float = 0.0
     emissive: Vec3 = field(default_factory=lambda: Vec3(0, 0, 0))
-    fresnel: float = 0.04        # Schlick fresnel term
+    fresnel: float = 0.04
+    ior: float = 1.5
+    transparency: float = 0.0
+    subsurface: float = 0.0
+    subsurface_color: Vec3 = field(default_factory=lambda: Vec3(0.5, 0.2, 0.1))
+    checker_scale: float = 0.0
+    checker_color: Vec3 = field(default_factory=lambda: Vec3(0.2, 0.2, 0.2))
 
 
 # ─── SDF Primitives ─────────────────────────────────────────────────────────
 
 def sdf_sphere(p: Vec3, center: Vec3, radius: float) -> float:
+    """Signed distance to a sphere."""
     return (p - center).length() - radius
 
 
 def sdf_box(p: Vec3, center: Vec3, half_extents: Vec3) -> float:
+    """Signed distance to an axis-aligned box.
+
+    Uses the standard SDF formulation:
+    - Outside: Euclidean distance to nearest face/edge/corner
+    - Inside: negative of the minimum distance to a face (closest face depth)
+    """
     q = p - center
-    # Component-wise absolute and clamping
     qx, qy, qz = abs(q.x), abs(q.y), abs(q.z)
+    # Outside: distance to nearest point on box surface
     cx = max(qx - half_extents.x, 0.0)
     cy = max(qy - half_extents.y, 0.0)
     cz = max(qz - half_extents.z, 0.0)
     outside_dist = math.sqrt(cx * cx + cy * cy + cz * cz)
-    inside_dist = max(half_extents.x - qx, half_extents.y - qy, half_extents.z - qz)
+    # Inside: negative of how deep we are (minimum face distance)
+    inside_dist = min(half_extents.x - qx, half_extents.y - qy, half_extents.z - qz)
     return outside_dist if inside_dist < 0 else -inside_dist
 
 
 def sdf_torus(p: Vec3, center: Vec3, major_r: float, minor_r: float) -> float:
+    """Signed distance to a torus in the XZ plane."""
     q = p - center
     xz_dist = math.sqrt(q.x * q.x + q.z * q.z) - major_r
     return math.sqrt(xz_dist * xz_dist + q.y * q.y) - minor_r
 
 
 def sdf_cylinder(p: Vec3, center: Vec3, radius: float, half_height: float) -> float:
+    """Signed distance to a vertical cylinder."""
     q = p - center
     dist_xz = math.sqrt(q.x * q.x + q.z * q.z) - radius
     dist_y = abs(q.y) - half_height
@@ -157,26 +221,26 @@ def sdf_cylinder(p: Vec3, center: Vec3, radius: float, half_height: float) -> fl
 
 
 def sdf_capsule(p: Vec3, a: Vec3, b: Vec3, radius: float) -> float:
+    """Signed distance to a capsule (line-segment swept sphere)."""
     ab = b - a
     ap = p - a
-    t = ap.dot(ab) / ab.dot(ab)
+    t = ap.dot(ab) / max(ab.dot(ab), 1e-12)  # Guard against zero-length segment
     t = max(0.0, min(1.0, t))
     closest = a + ab * t
     return (p - closest).length() - radius
 
 
 def sdf_plane(p: Vec3, height: float = 0.0) -> float:
+    """Signed distance to a horizontal plane at given height."""
     return p.y - height
 
 
 def sdf_cone(p: Vec3, center: Vec3, half_angle: float, height: float) -> float:
-    """Cone pointing up from center.y, given half_angle in radians and height."""
+    """Signed distance to a cone pointing up from center.y."""
     q = p - center
     q.y -= height
-    # Cone SDF
     sin_a = math.sin(half_angle)
     cos_a = math.cos(half_angle)
-    # Projected distance along cone surface
     d = math.sqrt(q.x * q.x + q.z * q.z)
     inside = -q.y - d * cos_a
     outside = d * sin_a + q.y * cos_a
@@ -185,9 +249,67 @@ def sdf_cone(p: Vec3, center: Vec3, half_angle: float, height: float) -> float:
     return max(outside, 0.0)
 
 
+def sdf_hex_prism(p: Vec3, center: Vec3, radius: float, half_height: float) -> float:
+    """Signed distance to a hexagonal prism (for interesting geometry)."""
+    q = p - center
+    # Hexagonal cross-section in XZ
+    k = math.sqrt(3.0) * 0.5
+    qx = abs(q.x)
+    qz = abs(q.z)
+    d_xz = max(qz - radius, qx * k + qz * 0.5) - radius  # Simplified hex SDF
+    # Actually use proper hex distance
+    qx_abs = abs(q.x)
+    qz_abs = abs(q.z)
+    # The six half-planes of a hexagon
+    d2 = qx_abs - radius
+    d3 = qz_abs - radius * k
+    d4 = qx_abs * 0.5 + qz_abs * k - radius
+    d_hex = max(d2, max(d3, d4))
+    # Extrude in Y
+    d_y = abs(q.y) - half_height
+    outside = math.sqrt(max(d_hex, 0.0) ** 2 + max(d_y, 0.0) ** 2)
+    inside = min(max(d_hex, d_y), 0.0)
+    return outside + inside
+
+
+def sdf_mandelbulb(p: Vec3, center: Vec3, scale: float = 1.0, power: float = 8.0,
+                   iterations: int = 8) -> float:
+    """Approximate distance estimator for the Mandelbulb fractal.
+
+    This is a ray-marchable distance estimator, not an exact SDF —
+    we use a normalized orbit trap method.
+    """
+    z = p - center
+    z = z * scale  # Scale to reasonable size
+    dr = 1.0
+    r = 0.0
+
+    for _ in range(iterations):
+        r = z.length()
+        if r > 2.0:
+            break
+        # Convert to spherical coordinates
+        theta = math.acos(max(-1.0, min(1.0, z.z / max(r, 1e-12))))
+        phi = math.atan2(z.y, z.x)
+        dr = pow(r, power - 1.0) * power * dr + 1.0
+
+        # New z = r^power * (sin(theta*power), sin(phi*power), cos(theta*power))
+        zr = pow(r, power)
+        theta *= power
+        phi *= power
+        z = Vec3(
+            zr * math.sin(theta) * math.cos(phi),
+            zr * math.sin(theta) * math.sin(phi),
+            zr * math.cos(theta),
+        ) + (p - center) * scale
+
+    return 0.5 * math.log(max(r, 1e-12)) * r / max(dr, 1.0) / scale
+
+
 # ─── CSG Operations ──────────────────────────────────────────────────────────
 
 def sdf_union(d1: float, d2: float) -> float:
+    """Boolean union (min) of two SDF values."""
     return min(d1, d2)
 
 
@@ -197,13 +319,32 @@ def sdf_smooth_union(d1: float, d2: float, k: float = 0.5) -> float:
     return min(d1, d2) - h * h * k * 0.25
 
 
+def sdf_smooth_subtraction(d1: float, d2: float, k: float = 0.5) -> float:
+    """Smooth subtraction: d1 minus d2, with smooth blending factor k."""
+    h = max(k - abs(-d2 - d1), 0.0) / k
+    return max(-d2, d1) + h * h * k * 0.25
+
+
 def sdf_subtraction(d1: float, d2: float) -> float:
     """Subtract d2 from d1 (d1 - d2)."""
     return max(-d2, d1)
 
 
 def sdf_intersection(d1: float, d2: float) -> float:
+    """Boolean intersection of two SDF values."""
     return max(d1, d2)
+
+
+# ─── Procedural Patterns ─────────────────────────────────────────────────────
+
+def checkerboard(p: Vec3, scale: float, color1: Vec3, color2: Vec3) -> Vec3:
+    """3D checkerboard pattern at given scale."""
+    ix = math.floor(p.x * scale)
+    iy = math.floor(p.y * scale)
+    iz = math.floor(p.z * scale)
+    if (ix + iy + iz) % 2 == 0:
+        return color1
+    return color2
 
 
 # ─── Scene Objects ───────────────────────────────────────────────────────────
@@ -213,6 +354,7 @@ class SceneObject:
     """An object in the scene: SDF function + material."""
     sdf_func: Callable[[Vec3], float]
     material: Material
+    interior_material: Optional[Material] = None  # For refractive objects (inside vs outside)
 
 
 # ─── Hit Info ────────────────────────────────────────────────────────────────
@@ -222,6 +364,7 @@ class HitResult:
     distance: float = float('inf')
     material: Optional[Material] = None
     object_index: int = -1
+    entering: bool = True  # True if entering, False if exiting (for refraction)
 
 
 # ─── Lighting ────────────────────────────────────────────────────────────────
@@ -254,10 +397,12 @@ class Scene:
         self.fog_density: float = 0.0
         self.time: float = 0.0
         self.background_func: Optional[Callable[[Vec3], Vec3]] = None
+        self.environment_color: Vec3 = Vec3(0.4, 0.5, 0.6)  # Fallback for refractive rays
 
-    def add_object(self, sdf_func: Callable[[Vec3], float], material: Material) -> int:
+    def add_object(self, sdf_func: Callable[[Vec3], float], material: Material,
+                   interior_material: Material = None) -> int:
         idx = len(self.objects)
-        self.objects.append(SceneObject(sdf_func, material))
+        self.objects.append(SceneObject(sdf_func, material, interior_material))
         return idx
 
     def add_directional_light(self, direction: Vec3, color: Vec3 = None, intensity: float = 1.0):
@@ -297,7 +442,6 @@ class Scene:
         """Sample sky color for a given direction."""
         if self.background_func:
             return self.background_func(direction)
-        # Default gradient sky
         t = max(direction.y, 0.0)
         horizon = Vec3(0.8, 0.82, 0.85)
         zenith = Vec3(0.2, 0.35, 0.75)
@@ -320,7 +464,7 @@ class RayMarcher:
                  max_bounces: int = 3, enable_shadows: bool = True,
                  enable_soft_shadows: bool = False, shadow_softness: float = 8.0,
                  enable_ao: bool = False, ao_steps: int = 5, ao_step_size: float = 0.1,
-                 ao_strength: float = 1.0):
+                 ao_strength: float = 1.0, max_refraction_bounces: int = 5):
         self.max_steps = max_steps
         self.max_distance = max_distance
         self.surface_epsilon = surface_epsilon
@@ -333,26 +477,28 @@ class RayMarcher:
         self.ao_steps = ao_steps
         self.ao_step_size = ao_step_size
         self.ao_strength = ao_strength
+        self.max_refraction_bounces = max_refraction_bounces
 
     def march(self, origin: Vec3, direction: Vec3, scene: Scene) -> HitResult:
-        """March a ray through the scene, returning the closest hit."""
+        """March a ray through the scene, returning the closest hit.
+
+        For refractive objects, we detect whether we are entering or exiting
+        by checking the sign of the SDF at the ray origin.
+        """
         t = 0.0
         hit = HitResult()
-        min_dist = float('inf')
 
         for step in range(self.max_steps):
             p = origin + direction * t
             result = scene.map(p)
             d = result.distance
 
-            # Track the closest we ever got (for soft shadows later)
-            if d < min_dist:
-                min_dist = d
-
             if d < self.surface_epsilon:
                 hit.distance = t
                 hit.material = result.material
                 hit.object_index = result.object_index
+                # Determine entering/exiting: if SDF is positive we're outside (entering)
+                hit.entering = d >= 0
                 return hit
 
             t += d
@@ -360,7 +506,7 @@ class RayMarcher:
             if t > self.max_distance:
                 break
 
-        hit.distance = min_dist  # No exact hit, use closest approach
+        hit.distance = t
         return hit
 
     def compute_normal(self, p: Vec3, scene: Scene) -> Vec3:
@@ -397,29 +543,32 @@ class RayMarcher:
             d = scene.map_distance(q)
 
             if self.enable_soft_shadows:
-                # Soft shadow: penalize close approaches
-                penumbra = max(d / t, 0.0)
+                penumbra = max(d / max(t, 1e-6), 0.0)
                 shadow = min(shadow, self.shadow_softness * penumbra)
             else:
                 if d < self.surface_epsilon:
                     return 0.0  # Hard shadow: fully occluded
 
-            t += d
+            t += max(d, self.surface_epsilon * 0.5)  # Prevent getting stuck
             if t > self.max_distance:
                 break
 
         return max(0.0, min(1.0, shadow))
 
+    def _get_albedo(self, material: Material, p: Vec3) -> Vec3:
+        """Get the effective albedo, considering checkerboard patterns."""
+        if material.checker_scale > 0:
+            return checkerboard(p, material.checker_scale, material.albedo, material.checker_color)
+        return material.albedo
+
     def shade(self, p: Vec3, normal: Vec3, view_dir: Vec3,
               material: Material, scene: Scene) -> Vec3:
         """Shade a surface point with all lighting contributions."""
-        color = material.albedo
-
-        # Emissive
+        # Emissive materials bypass shading
         if material.emissive.length() > 0:
-            color = material.emissive
-            return color
+            return material.emissive
 
+        color = self._get_albedo(material, p)
         result = BLACK
 
         # Ambient
@@ -428,16 +577,20 @@ class RayMarcher:
             ambient_strength *= self.compute_ao(p, normal, scene)
         result = result + color * ambient_strength
 
+        # Subsurface scattering approximation
+        if material.subsurface > 0:
+            sss = self._compute_subsurface(p, normal, material, scene)
+            result = result + sss
+
         # Directional lights
         for light in scene.directional_lights:
             light_dir = light.direction
             n_dot_l = max(normal.dot(light_dir), 0.0)
 
-            # Shadow
             shadow = self.compute_shadow(p, light_dir, scene)
 
             # Diffuse
-            diffuse = color * n_dot_l * light.color * light.intensity * shadow
+            diffuse = color * (n_dot_l * light.color * light.intensity * shadow)
 
             # Specular (Blinn-Phong)
             half_vec = (light_dir + view_dir).normalized()
@@ -451,13 +604,15 @@ class RayMarcher:
         for light in scene.point_lights:
             to_light = light.position - p
             dist = to_light.length()
+            if dist < 1e-6:
+                continue
             light_dir = to_light * (1.0 / dist)
             attenuation = 1.0 / (1.0 + 0.09 * dist + 0.032 * dist * dist)
             n_dot_l = max(normal.dot(light_dir), 0.0)
 
             shadow = self.compute_shadow(p, light_dir, scene)
 
-            diffuse = color * n_dot_l * light.color * light.intensity * attenuation * shadow
+            diffuse = color * (n_dot_l * light.color * light.intensity * attenuation * shadow)
 
             half_vec = (light_dir + view_dir).normalized()
             n_dot_h = max(normal.dot(half_vec), 0.0)
@@ -468,8 +623,32 @@ class RayMarcher:
 
         return result.clamp(0.0, 10.0)
 
-    def trace(self, origin: Vec3, direction: Vec3, scene: Scene, bounce: int = 0) -> Vec3:
-        """Trace a single ray, potentially bouncing for reflections."""
+    def _compute_subsurface(self, p: Vec3, normal: Vec3, material: Material,
+                            scene: Scene) -> Vec3:
+        """Approximate subsurface scattering by sampling light through the object."""
+        sss = BLACK
+        strength = material.subsurface
+
+        for light in scene.directional_lights:
+            # Estimate how much light comes through from the back side
+            back_n_dot_l = max((-normal).dot(light.direction), 0.0)
+            sss = sss + material.subsurface_color * back_n_dot_l * light.color * light.intensity * strength
+
+        for light in scene.point_lights:
+            to_light = light.position - p
+            dist = to_light.length()
+            if dist < 1e-6:
+                continue
+            light_dir = to_light * (1.0 / dist)
+            attenuation = 1.0 / (1.0 + 0.09 * dist + 0.032 * dist * dist)
+            back_n_dot_l = max((-normal).dot(light_dir), 0.0)
+            sss = sss + material.subsurface_color * back_n_dot_l * light.color * light.intensity * attenuation * strength
+
+        return sss
+
+    def trace(self, origin: Vec3, direction: Vec3, scene: Scene,
+              bounce: int = 0, refraction_depth: int = 0) -> Vec3:
+        """Trace a single ray, handling reflections and refractions."""
         hit = self.march(origin, direction, scene)
 
         if hit.material is None or hit.distance >= self.max_distance * 0.99:
@@ -489,12 +668,48 @@ class RayMarcher:
         if hit.material.reflectivity > 0 and bounce < self.max_bounces:
             reflect_dir = direction.reflect(normal)
             reflect_origin = p + normal * self.surface_epsilon * 2.0
-            reflect_color = self.trace(reflect_origin, reflect_dir, scene, bounce + 1)
-            # Fresnel approximation (Schlick)
+            reflect_color = self.trace(reflect_origin, reflect_dir, scene, bounce + 1, refraction_depth)
             cos_theta = max(view_dir.dot(normal), 0.0)
             fresnel = hit.material.fresnel + (1.0 - hit.material.fresnel) * ((1.0 - cos_theta) ** 5)
             reflect_amount = max(hit.material.reflectivity, fresnel) * (1.0 - hit.material.roughness)
             color = color * (1.0 - reflect_amount) + reflect_color * reflect_amount
+
+        # Refractions (glass/water)
+        if hit.material.transparency > 0 and refraction_depth < self.max_refraction_bounces:
+            cos_i = max(-direction.dot(normal), 0.0)
+            # Determine if entering or exiting
+            ior = hit.material.ior
+            if not hit.entering:
+                # Exiting: flip IOR ratio
+                eta = ior  # glass to air
+                # Actually we go from IOR medium to air: eta = 1.0/ior
+                eta = 1.0 / ior
+            else:
+                eta = 1.0 / ior  # air to glass
+
+            refract_dir = direction.refract(normal, eta)
+            if refract_dir is not None:
+                refract_origin = p - normal * self.surface_epsilon * 2.0
+                refract_color = self.trace(refract_origin, refract_dir, scene, bounce, refraction_depth + 1)
+
+                # Fresnel for glass (Schlick)
+                cos_theta = cos_i
+                r0 = ((1.0 - ior) / (1.0 + ior)) ** 2
+                fresnel = r0 + (1.0 - r0) * ((1.0 - cos_theta) ** 5)
+                transmittance = hit.material.transparency * (1.0 - fresnel)
+
+                # Beer's law: tint the refracted light based on distance
+                absorption = hit.material.albedo * hit.material.transparency
+                refract_color = refract_color * absorption.clamp(0.0, 1.0)
+
+                color = color * (1.0 - hit.material.transparency) + refract_color * transmittance
+            else:
+                # Total internal reflection
+                reflect_dir = direction.reflect(normal)
+                reflect_origin = p + normal * self.surface_epsilon * 2.0
+                if bounce < self.max_bounces:
+                    tir_color = self.trace(reflect_origin, reflect_dir, scene, bounce + 1, refraction_depth)
+                    color = color * (1.0 - hit.material.transparency) + tir_color * hit.material.transparency
 
         # Fog
         if scene.fog_density > 0:
@@ -507,29 +722,52 @@ class RayMarcher:
 # ─── Camera ──────────────────────────────────────────────────────────────────
 
 class Camera:
-    """Perspective camera with look-at targeting."""
+    """Perspective camera with look-at targeting and optional depth-of-field."""
 
-    def __init__(self, position: Vec3, target: Vec3, fov: float = 60.0, up: Vec3 = None):
+    def __init__(self, position: Vec3, target: Vec3, fov: float = 60.0,
+                 up: Vec3 = None, focal_distance: float = 0.0, aperture: float = 0.1):
         if up is None:
             up = Vec3(0, 1, 0)
         self.position = position
         self.target = target
         self.fov = fov
         self.up = up
+        self.focal_distance = focal_distance  # 0 = no DOF
+        self.aperture = aperture
 
-    def get_ray(self, u: float, v: float) -> Tuple[Vec3, Vec3]:
-        """Get ray direction for normalized screen coordinates u,v in [-0.5, 0.5]."""
+    def get_ray(self, u: float, v: float, sample_index: int = 0) -> Tuple[Vec3, Vec3]:
+        """Get ray for normalized screen coordinates u,v.
+
+        When focal_distance > 0, applies thin-lens DOF with stratified
+        disk sampling based on sample_index.
+        """
         forward = (self.target - self.position).normalized()
         right = forward.cross(self.up).normalized()
         true_up = right.cross(forward).normalized()
 
-        aspect = 1.0  # Will be adjusted in renderer
         fov_rad = math.radians(self.fov)
         half_h = math.tan(fov_rad / 2.0)
-        half_w = half_h * aspect
 
-        direction = (forward + right * (u * 2.0 * half_w) + true_up * (v * 2.0 * half_h)).normalized()
-        return self.position, direction
+        # Direction toward focal point on the image plane
+        direction = (forward + right * (u * 2.0 * half_h) + true_up * (v * 2.0 * half_h)).normalized()
+
+        origin = self.position
+
+        if self.focal_distance > 0 and self.aperture > 0:
+            # Thin lens model: jitter the origin on a disk, then
+            # redirect direction toward the focal plane point
+            focal_point = origin + direction * self.focal_distance
+
+            # Stratified disk sampling using golden ratio
+            angle = sample_index * 2.399963  # golden angle in radians
+            r = math.sqrt((sample_index % 16 + 0.5) / 16.0) * self.aperture
+            jitter_x = math.cos(angle) * r
+            jitter_y = math.sin(angle) * r
+
+            origin = self.position + right * jitter_x + true_up * jitter_y
+            direction = (focal_point - origin).normalized()
+
+        return origin, direction
 
 
 # ─── Renderer ────────────────────────────────────────────────────────────────
@@ -538,11 +776,12 @@ class Renderer:
     """Turns scenes into images using the ray marcher."""
 
     def __init__(self, width: int = 800, height: int = 600, samples: int = 1,
-                 marcher: RayMarcher = None):
+                 marcher: RayMarcher = None, quiet: bool = False):
         self.width = width
         self.height = height
         self.samples = samples
         self.marcher = marcher or RayMarcher()
+        self.quiet = quiet
 
     def render(self, scene: Scene, camera: Camera) -> np.ndarray:
         """Render the scene, returning an (H, W, 3) float array."""
@@ -558,20 +797,20 @@ class Renderer:
 
         total_pixels = self.width * self.height
         last_pct = -1
-
         t_start = time.time()
 
         for y in range(self.height):
             pct = int((y * self.width) / total_pixels * 100)
-            if pct != last_pct and pct % 10 == 0:
+            if pct != last_pct and pct % 10 == 0 and not self.quiet:
                 elapsed = time.time() - t_start
+                remaining = (elapsed / max(pct, 1)) * (100 - pct) if pct > 0 else 0
                 last_pct = pct
-                print(f"  Rendering: {pct}% ({elapsed:.1f}s)")
+                print(f"  Rendering: {pct}% ({elapsed:.1f}s, ~{remaining:.0f}s remaining)")
 
             for x in range(self.width):
                 color = BLACK
                 for s in range(self.samples):
-                    # Jittered sampling
+                    # Jittered sampling with golden ratio for better distribution
                     if self.samples > 1:
                         jx = (x + (s * 0.618033988749895 % 1.0)) / self.width
                         jy = (y + (s * 0.414213562373095 % 1.0)) / self.height
@@ -582,23 +821,20 @@ class Renderer:
                     u = (jx - 0.5) * 2.0 * half_w
                     v = (0.5 - jy) * 2.0 * half_h
 
-                    direction = (forward + right * u + true_up * v).normalized()
-                    sample_color = self.marcher.trace(camera.position, direction, scene)
+                    origin, direction = camera.get_ray(u, v, s)
+                    sample_color = self.marcher.trace(origin, direction, scene)
                     color = color + sample_color
 
                 color = color * (1.0 / self.samples)
                 # Gamma correction
-                color = Vec3(
-                    pow(max(color.x, 0.0), 1.0 / 2.2),
-                    pow(max(color.y, 0.0), 1.0 / 2.2),
-                    pow(max(color.z, 0.0), 1.0 / 2.2),
-                )
+                color = color.pow(1.0 / 2.2)
                 img[y, x, 0] = color.x
                 img[y, x, 1] = color.y
                 img[y, x, 2] = color.z
 
         elapsed = time.time() - t_start
-        print(f"  Rendering: 100% ({elapsed:.1f}s)")
+        if not self.quiet:
+            print(f"  Rendering: 100% ({elapsed:.1f}s)")
         return img
 
     def save(self, img: np.ndarray, path: str):
@@ -606,22 +842,25 @@ class Renderer:
         img_uint8 = np.clip(img * 255, 0, 255).astype(np.uint8)
         pil_img = Image.fromarray(img_uint8, 'RGB')
         pil_img.save(path)
-        print(f"  Saved: {path} ({img.shape[1]}x{img.shape[0]})")
+        if not self.quiet:
+            print(f"  Saved: {path} ({img.shape[1]}x{img.shape[0]})")
 
 
 # ─── Scene Builders ──────────────────────────────────────────────────────────
 
-def build_demo_scene(time: float = 0.0) -> Scene:
+def build_demo_scene(time_val: float = 0.0) -> Scene:
     """Default demo scene with various primitives."""
     scene = Scene()
-    scene.time = time
+    scene.time = time_val
 
-    # Ground plane - checkerboard material
+    # Ground plane - checkerboard
     ground_mat = Material(
-        albedo=Vec3(0.45, 0.45, 0.45),
+        albedo=Vec3(0.7, 0.7, 0.7),
         specular=0.2,
         roughness=0.7,
         reflectivity=0.15,
+        checker_scale=1.0,
+        checker_color=Vec3(0.3, 0.3, 0.35),
     )
 
     def ground_sdf(p: Vec3) -> float:
@@ -629,9 +868,9 @@ def build_demo_scene(time: float = 0.0) -> Scene:
 
     scene.add_object(ground_sdf, ground_mat)
 
-    # Animated sphere
+    # Animated sphere (red, reflective)
     def sphere_sdf(p: Vec3) -> float:
-        center = Vec3(0, 1.0 + 0.3 * math.sin(time * 1.5), 0)
+        center = Vec3(0, 1.0 + 0.3 * math.sin(time_val * 1.5), 0)
         return sdf_sphere(p, center, 1.0)
 
     sphere_mat = Material(
@@ -643,10 +882,9 @@ def build_demo_scene(time: float = 0.0) -> Scene:
     )
     scene.add_object(sphere_sdf, sphere_mat)
 
-    # Box
+    # Box (blue)
     def box_sdf(p: Vec3) -> float:
-        center = Vec3(3.0, 0.75, 1.0)
-        return sdf_box(p, center, Vec3(0.75, 0.75, 0.75))
+        return sdf_box(p, Vec3(3.0, 0.75, 1.0), Vec3(0.75, 0.75, 0.75))
 
     box_mat = Material(
         albedo=Vec3(0.2, 0.5, 0.9),
@@ -656,10 +894,9 @@ def build_demo_scene(time: float = 0.0) -> Scene:
     )
     scene.add_object(box_sdf, box_mat)
 
-    # Torus
+    # Torus (yellow)
     def torus_sdf(p: Vec3) -> float:
-        center = Vec3(-2.5, 0.8, 2.0)
-        return sdf_torus(p, center, 0.8, 0.25)
+        return sdf_torus(p, Vec3(-2.5, 0.8, 2.0), 0.8, 0.25)
 
     torus_mat = Material(
         albedo=Vec3(0.9, 0.85, 0.1),
@@ -668,7 +905,7 @@ def build_demo_scene(time: float = 0.0) -> Scene:
     )
     scene.add_object(torus_sdf, torus_mat)
 
-    # Capsule
+    # Capsule (green)
     def capsule_sdf(p: Vec3) -> float:
         return sdf_capsule(p, Vec3(-3.0, 0.5, -1.5), Vec3(-3.0, 2.5, -1.5), 0.35)
 
@@ -679,7 +916,7 @@ def build_demo_scene(time: float = 0.0) -> Scene:
     )
     scene.add_object(capsule_sdf, capsule_mat)
 
-    # Smooth union of two spheres
+    # Smooth union of two spheres (orange)
     def smooth_sdf(p: Vec3) -> float:
         d1 = sdf_sphere(p, Vec3(1.5, 0.7, -2.5), 0.7)
         d2 = sdf_sphere(p, Vec3(2.5, 0.7, -2.5), 0.7)
@@ -692,7 +929,7 @@ def build_demo_scene(time: float = 0.0) -> Scene:
     )
     scene.add_object(smooth_sdf, smooth_mat)
 
-    # Cylinder
+    # Cylinder (purple)
     def cylinder_sdf(p: Vec3) -> float:
         return sdf_cylinder(p, Vec3(3.5, 0.6, -3.0), 0.5, 0.6)
 
@@ -711,10 +948,10 @@ def build_demo_scene(time: float = 0.0) -> Scene:
     return scene
 
 
-def build_chess_scene(time: float = 0.0) -> Scene:
+def build_chess_scene(time_val: float = 0.0) -> Scene:
     """Chess-like scene with a reflective board and pieces."""
     scene = Scene()
-    scene.time = time
+    scene.time = time_val
     scene.fog_density = 0.015
     scene.fog_color = Vec3(0.35, 0.3, 0.25)
 
@@ -726,7 +963,7 @@ def build_chess_scene(time: float = 0.0) -> Scene:
 
     scene.add_object(board_sdf, board_mat)
 
-    # Checker pattern via separate raised squares
+    # Checker pattern
     for ix in range(-4, 5):
         for iz in range(-4, 5):
             if (ix + iz) % 2 == 0:
@@ -739,7 +976,7 @@ def build_chess_scene(time: float = 0.0) -> Scene:
                 return sdf
             scene.add_object(make_sq_sdf(ix, iz), sq_mat)
 
-    # King piece (tall cylinder + sphere)
+    # King
     king_mat = Material(albedo=Vec3(0.95, 0.92, 0.85), specular=0.8, roughness=0.1, reflectivity=0.2)
 
     def king_sdf(p: Vec3) -> float:
@@ -750,7 +987,7 @@ def build_chess_scene(time: float = 0.0) -> Scene:
 
     scene.add_object(king_sdf, king_mat)
 
-    # Pawn (short)
+    # Pawn
     pawn_mat = Material(albedo=Vec3(0.12, 0.1, 0.08), specular=0.6, roughness=0.2)
 
     def pawn_sdf(p: Vec3) -> float:
@@ -767,10 +1004,10 @@ def build_chess_scene(time: float = 0.0) -> Scene:
     return scene
 
 
-def build_terrain_scene(time: float = 0.0) -> Scene:
-    """Procedural terrain scene using noise-like SDF."""
+def build_terrain_scene(time_val: float = 0.0) -> Scene:
+    """Procedural terrain scene with water."""
     scene = Scene()
-    scene.time = time
+    scene.time = time_val
     scene.fog_density = 0.02
     scene.fog_color = Vec3(0.6, 0.7, 0.8)
 
@@ -793,13 +1030,17 @@ def build_terrain_scene(time: float = 0.0) -> Scene:
 
     # Water plane
     def water_sdf(p: Vec3) -> float:
-        return sdf_plane(p, height=0.3)
+        # Gentle wave animation
+        wave = math.sin(p.x * 2.0 + time_val) * 0.02 + math.cos(p.z * 3.0 + time_val * 0.7) * 0.015
+        return sdf_plane(p, height=0.3 + wave)
 
     water_mat = Material(
         albedo=Vec3(0.15, 0.3, 0.6),
         specular=0.9,
         roughness=0.05,
         reflectivity=0.6,
+        transparency=0.3,
+        ior=1.33,  # Water
     )
     scene.add_object(water_sdf, water_mat)
 
@@ -809,17 +1050,17 @@ def build_terrain_scene(time: float = 0.0) -> Scene:
     return scene
 
 
-def build_abstract_scene(time: float = 0.0) -> Scene:
+def build_abstract_scene(time_val: float = 0.0) -> Scene:
     """Abstract scene with morphing smooth unions."""
     scene = Scene()
-    scene.time = time
+    scene.time = time_val
 
     def abstract_sdf(p: Vec3) -> float:
         d = float('inf')
         for i in range(5):
-            angle = time * 0.5 + i * math.pi * 2.0 / 5.0
+            angle = time_val * 0.5 + i * math.pi * 2.0 / 5.0
             cx = 2.0 * math.cos(angle)
-            cy = 1.5 + 0.5 * math.sin(time + i)
+            cy = 1.5 + 0.5 * math.sin(time_val + i)
             cz = 2.0 * math.sin(angle)
             d = sdf_smooth_union(d, sdf_sphere(p, Vec3(cx, cy, cz), 0.8), k=1.2)
         return d
@@ -833,7 +1074,6 @@ def build_abstract_scene(time: float = 0.0) -> Scene:
     )
     scene.add_object(abstract_sdf, abstract_mat)
 
-    # Ground
     ground_mat = Material(albedo=Vec3(0.2, 0.2, 0.25), specular=0.2, roughness=0.8, reflectivity=0.3)
     scene.add_object(lambda p: sdf_plane(p, height=0.0), ground_mat)
 
@@ -843,28 +1083,147 @@ def build_abstract_scene(time: float = 0.0) -> Scene:
     return scene
 
 
+def build_glass_scene(time_val: float = 0.0) -> Scene:
+    """Scene showcasing glass/refraction and subsurface scattering."""
+    scene = Scene()
+    scene.time = time_val
+
+    # Ground plane - checkerboard
+    ground_mat = Material(
+        albedo=Vec3(0.8, 0.8, 0.8),
+        specular=0.2,
+        roughness=0.7,
+        reflectivity=0.2,
+        checker_scale=2.0,
+        checker_color=Vec3(0.3, 0.3, 0.3),
+    )
+    scene.add_object(lambda p: sdf_plane(p, height=0.0), ground_mat)
+
+    # Glass sphere (center)
+    glass_mat = Material(
+        albedo=Vec3(0.95, 0.95, 0.98),
+        specular=0.9,
+        roughness=0.02,
+        reflectivity=0.3,
+        fresnel=0.04,
+        transparency=0.9,
+        ior=1.5,  # Glass
+    )
+    scene.add_object(lambda p: sdf_sphere(p, Vec3(0, 1.2, 0), 1.2), glass_mat)
+
+    # Subsurface scattering sphere (wax/candle-like)
+    sss_mat = Material(
+        albedo=Vec3(0.9, 0.7, 0.5),
+        specular=0.3,
+        roughness=0.6,
+        subsurface=0.8,
+        subsurface_color=Vec3(0.9, 0.4, 0.1),
+    )
+    scene.add_object(lambda p: sdf_sphere(p, Vec3(-3, 0.8, 1), 0.8), sss_mat)
+
+    # Glass cube
+    glass_cube_mat = Material(
+        albedo=Vec3(0.95, 0.95, 0.97),
+        specular=0.8,
+        roughness=0.02,
+        reflectivity=0.2,
+        fresnel=0.04,
+        transparency=0.85,
+        ior=1.45,
+    )
+    scene.add_object(lambda p: sdf_box(p, Vec3(3, 0.75, -0.5), Vec3(0.75, 0.75, 0.75)), glass_cube_mat)
+
+    # Opaque red sphere for contrast
+    red_mat = Material(
+        albedo=Vec3(0.9, 0.1, 0.1),
+        specular=0.7,
+        roughness=0.15,
+        reflectivity=0.3,
+    )
+    scene.add_object(lambda p: sdf_sphere(p, Vec3(1.5, 0.6, 2.0), 0.6), red_mat)
+
+    # Water IOR sphere
+    water_mat = Material(
+        albedo=Vec3(0.7, 0.85, 0.95),
+        specular=0.9,
+        roughness=0.01,
+        reflectivity=0.15,
+        transparency=0.7,
+        ior=1.33,
+    )
+    scene.add_object(lambda p: sdf_sphere(p, Vec3(-1.5, 0.7, -2.5), 0.7), water_mat)
+
+    scene.add_directional_light(Vec3(0.5, 0.8, 0.3), Vec3(1.0, 0.95, 0.85), 1.2)
+    scene.add_directional_light(Vec3(-0.3, 0.4, -0.5), Vec3(0.3, 0.4, 0.6), 0.3)
+    scene.add_point_light(Vec3(-2, 3, 2), Vec3(1.0, 0.7, 0.3), 4.0)
+
+    return scene
+
+
+def build_fractal_scene(time_val: float = 0.0) -> Scene:
+    """Mandelbulb fractal scene."""
+    scene = Scene()
+    scene.time = time_val
+    scene.fog_density = 0.01
+    scene.fog_color = Vec3(0.1, 0.1, 0.15)
+
+    # Mandelbulb
+    power = 8.0 + 2.0 * math.sin(time_val * 0.3)
+
+    def fractal_sdf(p: Vec3) -> float:
+        return sdf_mandelbulb(p, Vec3(0, 1.5, 0), scale=1.2, power=power, iterations=8)
+
+    fractal_mat = Material(
+        albedo=Vec3(0.8, 0.6, 0.3),
+        specular=0.5,
+        roughness=0.4,
+        reflectivity=0.1,
+    )
+    scene.add_object(fractal_sdf, fractal_mat)
+
+    # Ground
+    ground_mat = Material(
+        albedo=Vec3(0.15, 0.15, 0.2),
+        specular=0.3,
+        roughness=0.8,
+        reflectivity=0.3,
+    )
+    scene.add_object(lambda p: sdf_plane(p, height=0.0), ground_mat)
+
+    scene.add_directional_light(Vec3(0.5, 0.8, 0.3), Vec3(1.0, 0.95, 0.85), 1.0)
+    scene.add_directional_light(Vec3(-0.5, 0.3, -0.5), Vec3(0.4, 0.3, 0.6), 0.4)
+    scene.add_point_light(Vec3(3, 4, -2), Vec3(0.8, 0.6, 1.0), 5.0)
+
+    return scene
+
+
 SCENES = {
     'demo': build_demo_scene,
     'chess': build_chess_scene,
     'terrain': build_terrain_scene,
     'abstract': build_abstract_scene,
+    'glass': build_glass_scene,
+    'fractal': build_fractal_scene,
 }
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='SDF Ray Marcher')
+    parser = argparse.ArgumentParser(description='SDF Ray Marcher k9f2')
     parser.add_argument('--width', type=int, default=800, help='Image width')
     parser.add_argument('--height', type=int, default=600, help='Image height')
     parser.add_argument('--samples', type=int, default=1, help='Samples per pixel (AA)')
     parser.add_argument('--output', type=str, default='output.png', help='Output file path')
     parser.add_argument('--scene', type=str, default='demo', choices=SCENES.keys(), help='Scene to render')
     parser.add_argument('--animate', type=int, default=1, help='Number of animation frames')
-    parser.add_argument('--max-bounces', type=int, default=3, help='Max reflection bounces')
+    parser.add_argument('--max-bounces', type=int, default=3, help='Max reflection/refraction bounces')
     parser.add_argument('--ao', action='store_true', help='Enable ambient occlusion')
     parser.add_argument('--soft-shadow', action='store_true', help='Enable soft shadows')
     parser.add_argument('--no-shadow', action='store_true', help='Disable shadows')
+    parser.add_argument('--dof', type=float, default=0, help='Depth of field focal distance (0=off)')
+    parser.add_argument('--aperture', type=float, default=0.1, help='DOF aperture size')
+    parser.add_argument('--quiet', action='store_true', help='Suppress progress output')
     parser.add_argument('--steps', type=int, default=128, help='Max ray march steps')
 
     args = parser.parse_args()
@@ -882,49 +1241,60 @@ def main():
         height=args.height,
         samples=args.samples,
         marcher=marcher,
+        quiet=args.quiet,
     )
 
     build_scene = SCENES[args.scene]
 
+    # Camera presets per scene
+    def make_camera(scene_name: str, anim_t: float = 0.0) -> Camera:
+        if scene_name == 'demo':
+            if anim_t != 0:
+                pos = Vec3(7 * math.cos(anim_t * 0.3), 4, 7 * math.sin(anim_t * 0.3))
+            else:
+                pos = Vec3(7, 4, 7)
+            return Camera(pos, Vec3(0, 1, 0), fov=55, focal_distance=args.dof, aperture=args.aperture)
+        elif scene_name == 'chess':
+            return Camera(Vec3(5, 5, 8), Vec3(0, 0.5, 0), fov=50, focal_distance=args.dof or 0, aperture=args.aperture)
+        elif scene_name == 'terrain':
+            return Camera(Vec3(8, 5, 8), Vec3(0, 1, 0), fov=60, focal_distance=args.dof or 0, aperture=args.aperture)
+        elif scene_name == 'abstract':
+            if anim_t != 0:
+                pos = Vec3(6 * math.cos(anim_t * 0.2), 4, 6 * math.sin(anim_t * 0.2))
+            else:
+                pos = Vec3(6, 4, 6)
+            return Camera(pos, Vec3(0, 1.5, 0), fov=55, focal_distance=args.dof or 0, aperture=args.aperture)
+        elif scene_name == 'glass':
+            return Camera(Vec3(5, 3.5, 8), Vec3(0, 1, 0), fov=50, focal_distance=args.dof or 8, aperture=args.aperture)
+        elif scene_name == 'fractal':
+            if anim_t != 0:
+                pos = Vec3(4 * math.cos(anim_t * 0.2), 3, 4 * math.sin(anim_t * 0.2))
+            else:
+                pos = Vec3(4, 3, 4)
+            return Camera(pos, Vec3(0, 1.5, 0), fov=50, focal_distance=args.dof or 0, aperture=args.aperture)
+        else:
+            return Camera(Vec3(7, 4, 7), Vec3(0, 1, 0), fov=55, focal_distance=args.dof, aperture=args.aperture)
+
     if args.animate > 1:
-        # Animation mode
-        import os
         basename = os.path.splitext(args.output)[0]
         ext = os.path.splitext(args.output)[1] or '.png'
         for frame in range(args.animate):
             t = frame / args.animate * math.pi * 2.0
-            print(f"Frame {frame + 1}/{args.animate}")
+            if not args.quiet:
+                print(f"Frame {frame + 1}/{args.animate}")
             scene = build_scene(t)
-            if args.scene == 'demo':
-                cam = Camera(Vec3(7 * math.cos(t * 0.3), 4, 7 * math.sin(t * 0.3)),
-                             Vec3(0, 1, 0), fov=55)
-            elif args.scene == 'abstract':
-                cam = Camera(Vec3(6 * math.cos(t * 0.2), 4, 6 * math.sin(t * 0.2)),
-                             Vec3(0, 1.5, 0), fov=55)
-            else:
-                cam = Camera(Vec3(8, 5, 8), Vec3(0, 1, 0), fov=55)
-
+            cam = make_camera(args.scene, t)
             img = renderer.render(scene, cam)
             frame_path = f"{basename}_{frame:04d}{ext}"
             renderer.save(img, frame_path)
-        print(f"Animation complete: {args.animate} frames")
+        if not args.quiet:
+            print(f"Animation complete: {args.animate} frames")
     else:
-        # Single frame
         scene = build_scene(0.0)
+        cam = make_camera(args.scene)
 
-        # Set up camera based on scene
-        if args.scene == 'demo':
-            cam = Camera(Vec3(7, 4, 7), Vec3(0, 1, 0), fov=55)
-        elif args.scene == 'chess':
-            cam = Camera(Vec3(5, 5, 8), Vec3(0, 0.5, 0), fov=50)
-        elif args.scene == 'terrain':
-            cam = Camera(Vec3(8, 5, 8), Vec3(0, 1, 0), fov=60)
-        elif args.scene == 'abstract':
-            cam = Camera(Vec3(6, 4, 6), Vec3(0, 1.5, 0), fov=55)
-        else:
-            cam = Camera(Vec3(7, 4, 7), Vec3(0, 1, 0), fov=55)
-
-        print(f"Rendering scene '{args.scene}' ({args.width}x{args.height})")
+        if not args.quiet:
+            print(f"Rendering scene '{args.scene}' ({args.width}x{args.height})")
         img = renderer.render(scene, cam)
         renderer.save(img, args.output)
 
