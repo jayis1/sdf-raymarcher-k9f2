@@ -236,31 +236,51 @@ def sdf_plane(p: Vec3, height: float = 0.0) -> float:
 
 
 def sdf_cone(p: Vec3, center: Vec3, half_angle: float, height: float) -> float:
-    """Signed distance to a cone pointing up from center.y."""
+    """Signed distance to a cone pointing up from center.y with base at center.y.
+
+    The cone has its tip at (center.x, center.y + height, center.z) and
+    base radius = height * tan(half_angle) at center.y.
+
+    Args:
+        p: Point to evaluate.
+        center: Center of the cone base.
+        half_angle: Half-angle of the cone in radians.
+        height: Height of the cone.
+    """
     q = p - center
-    q.y -= height
+    # Cone without cap: distance to infinite double cone
     sin_a = math.sin(half_angle)
     cos_a = math.cos(half_angle)
-    d = math.sqrt(q.x * q.x + q.z * q.z)
-    inside = -q.y - d * cos_a
-    outside = d * sin_a + q.y * cos_a
-    if inside < 0 and outside < 0:
-        return -min(-inside, -outside)
-    return max(outside, 0.0)
+    # Distance from point to cone surface
+    # Project onto 2D (distance from axis, height)
+    d_xz = math.sqrt(q.x * q.x + q.z * q.z)
+    # Cone surface equation: d_xz = (height - q.y) * tan(half_angle)
+    # SDF: cos_a * d_xz - sin_a * (height - q.y) for the cone surface
+    cone_dist = cos_a * d_xz + sin_a * (q.y - height)
+
+    # Cap at base (y = 0 relative to center)
+    base_dist = -q.y
+
+    # Cap at the bottom
+    if q.y < 0:
+        # Below base: distance is base_dist or cone_dist, whichever is closer
+        return math.sqrt(d_xz * d_xz + q.y * q.y)
+
+    # Intersect cone with base plane
+    return max(cone_dist, base_dist)
 
 
 def sdf_hex_prism(p: Vec3, center: Vec3, radius: float, half_height: float) -> float:
-    """Signed distance to a hexagonal prism (for interesting geometry)."""
+    """Signed distance to a hexagonal prism (vertical, in XZ plane).
+
+    Uses the intersection of six half-planes for the hexagonal cross-section,
+    extruded along Y.
+    """
     q = p - center
-    # Hexagonal cross-section in XZ
     k = math.sqrt(3.0) * 0.5
-    qx = abs(q.x)
-    qz = abs(q.z)
-    d_xz = max(qz - radius, qx * k + qz * 0.5) - radius  # Simplified hex SDF
-    # Actually use proper hex distance
     qx_abs = abs(q.x)
     qz_abs = abs(q.z)
-    # The six half-planes of a hexagon
+    # The three pairs of half-planes that define a regular hexagon
     d2 = qx_abs - radius
     d3 = qz_abs - radius * k
     d4 = qx_abs * 0.5 + qz_abs * k - radius
@@ -483,10 +503,15 @@ class RayMarcher:
         """March a ray through the scene, returning the closest hit.
 
         For refractive objects, we detect whether we are entering or exiting
-        by checking the sign of the SDF at the ray origin.
+        by checking the SDF at the ray origin — if it's negative, we're
+        already inside an object (exiting).
         """
         t = 0.0
         hit = HitResult()
+
+        # Check if we're starting inside an object (for refraction)
+        initial_result = scene.map(origin)
+        hit.entering = initial_result.distance >= 0  # Outside = entering
 
         for step in range(self.max_steps):
             p = origin + direction * t
@@ -497,8 +522,6 @@ class RayMarcher:
                 hit.distance = t
                 hit.material = result.material
                 hit.object_index = result.object_index
-                # Determine entering/exiting: if SDF is positive we're outside (entering)
-                hit.entering = d >= 0
                 return hit
 
             t += d
@@ -680,10 +703,9 @@ class RayMarcher:
             # Determine if entering or exiting
             ior = hit.material.ior
             if not hit.entering:
-                # Exiting: flip IOR ratio
-                eta = ior  # glass to air
-                # Actually we go from IOR medium to air: eta = 1.0/ior
-                eta = 1.0 / ior
+                # Exiting glass: going from glass (IOR medium) to air
+                # Snell's law: n1*sin(θ1) = n2*sin(θ2), eta = n1/n2 = ior/1.0
+                eta = ior
             else:
                 eta = 1.0 / ior  # air to glass
 
@@ -735,8 +757,15 @@ class Camera:
         self.focal_distance = focal_distance  # 0 = no DOF
         self.aperture = aperture
 
-    def get_ray(self, u: float, v: float, sample_index: int = 0) -> Tuple[Vec3, Vec3]:
-        """Get ray for normalized screen coordinates u,v.
+    def get_ray(self, u: float, v: float, aspect: float = 1.0,
+                sample_index: int = 0) -> Tuple[Vec3, Vec3]:
+        """Get ray for normalized screen coordinates u,v in [-0.5, 0.5].
+
+        Args:
+            u: Horizontal screen coordinate, -0.5 (left) to 0.5 (right).
+            v: Vertical screen coordinate, -0.5 (bottom) to 0.5 (top).
+            aspect: Width/height aspect ratio.
+            sample_index: Sample index for DOF disk sampling.
 
         When focal_distance > 0, applies thin-lens DOF with stratified
         disk sampling based on sample_index.
@@ -747,9 +776,10 @@ class Camera:
 
         fov_rad = math.radians(self.fov)
         half_h = math.tan(fov_rad / 2.0)
+        half_w = half_h * aspect
 
         # Direction toward focal point on the image plane
-        direction = (forward + right * (u * 2.0 * half_h) + true_up * (v * 2.0 * half_h)).normalized()
+        direction = (forward + right * (u * 2.0 * half_w) + true_up * (v * 2.0 * half_h)).normalized()
 
         origin = self.position
 
@@ -787,13 +817,6 @@ class Renderer:
         """Render the scene, returning an (H, W, 3) float array."""
         img = np.zeros((self.height, self.width, 3), dtype=np.float64)
         aspect = self.width / self.height
-        fov_rad = math.radians(camera.fov)
-        half_h = math.tan(fov_rad / 2.0)
-        half_w = half_h * aspect
-
-        forward = (camera.target - camera.position).normalized()
-        right = forward.cross(camera.up).normalized()
-        true_up = right.cross(forward).normalized()
 
         total_pixels = self.width * self.height
         last_pct = -1
@@ -818,10 +841,11 @@ class Renderer:
                         jx = (x + 0.5) / self.width
                         jy = (y + 0.5) / self.height
 
-                    u = (jx - 0.5) * 2.0 * half_w
-                    v = (0.5 - jy) * 2.0 * half_h
+                    # Normalized coordinates in [-0.5, 0.5]
+                    u = jx - 0.5
+                    v = 0.5 - jy  # Flip Y so up is positive
 
-                    origin, direction = camera.get_ray(u, v, s)
+                    origin, direction = camera.get_ray(u, v, aspect, s)
                     sample_color = self.marcher.trace(origin, direction, scene)
                     color = color + sample_color
 

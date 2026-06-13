@@ -183,6 +183,9 @@ raymarcher.py
 
 test_raymarcher.py
 └── 90 tests covering Vec3 math, SDF primitives, CSG ops, materials, scenes, rendering
+
+test_bugs.py
+└── 19 bug-specific tests covering FOV, entering detection, refraction IOR, cone SDF, aspect ratio, etc.
 ```
 
 ## Testing
@@ -210,6 +213,24 @@ The test suite covers:
 - Python 3.11+
 - NumPy
 - Pillow
+
+## Known Issues (Resolved)
+
+The following bugs were found and fixed during the Phase 3 bug hunt:
+
+1. **Camera FOV double-scaling (Critical)**: `Renderer.render()` pre-scaled `u,v` coordinates by `half_w/half_h` and then `Camera.get_ray()` applied FOV scaling again internally, effectively doubling the FOV. This made rendered images appear zoomed in compared to the specified FOV. **Fix**: Removed pre-scaling from `render()`, changed `get_ray()` to accept an `aspect` parameter, and pass normalized `[-0.5, 0.5]` coordinates directly.
+
+2. **Ray march entering detection (Critical)**: `march()` determined whether a ray was entering or exiting an object based on the SDF value at the hit point, which is always near `surface_epsilon` (ambiguous). This caused refraction to use the wrong IOR when exiting glass objects. **Fix**: Check the SDF at the ray *origin* instead — if the origin is inside an object (SDF < 0), the ray is exiting.
+
+3. **Refraction IOR flip bug (Critical)**: When exiting a glass object, `eta` was set to `1/ior` (same as entering) instead of `ior`. Per Snell's law, `eta = n1/n2`: entering is `1.0/1.5 ≈ 0.667` (air→glass), but exiting should be `1.5` (glass→air). **Fix**: Set `eta = ior` when exiting.
+
+4. **Cone SDF incorrect (Moderate)**: The cone SDF didn't properly cap the base or handle inside/outside regions. Points below the base got wrong distances, and the formula didn't match the standard capped cone SDF. **Fix**: Rewrote with proper base capping using the `max(cone_dist, base_dist)` intersection.
+
+5. **Hex prism dead code (Minor)**: `sdf_hex_prism()` computed `d_xz` on line 259 but then immediately overwrote it with `d_hex` computed separately. The initial computation and misleading comment were removed.
+
+6. **Dead code in refraction IOR logic (Minor)**: Lines 707-708 assigned `eta = ior` and then immediately overwrote with `eta = 1.0 / ior` with a comment explaining the correction. This was confusing dead code. **Fix**: Removed the dead assignment and clarified the comment.
+
+7. **Renderer dead code (Minor)**: `render()` computed `fov_rad`, `half_h`, `half_w`, `forward`, `right`, `true_up` but never used them — these were leftover from when rendering was done directly in the method. **Fix**: Removed the unused computations.
 
 ## License
 
